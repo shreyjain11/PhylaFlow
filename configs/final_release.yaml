@@ -1,0 +1,114 @@
+# Final PhylaFlow model recipe used for the DS1-DS8 reported model.
+#
+# Paths intentionally use environment variables. A runnable release should set:
+#   PHYLAFLOW_DATA_ROOT      root containing short-run posterior references
+#   PHYLAFLOW_ARTIFACT_ROOT  root containing checkpoints and embedding tables
+#   PHYLAFLOW_OUTPUT_ROOT    writable output directory
+
+model:
+  num_node_types: 3
+  num_edge_types: 2
+  embed_dim: 128
+  output_dim: 1
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.0
+  attention_dropout: 0.0
+  activation_dropout: 0.0
+  drop_path_rate: 0.0
+  use_performer: false
+  layernorm_style: prenorm
+
+  tokenizer_lap_dim: 8
+  tokenizer_lap_dropout: 0.0
+  tokenizer_n_layers: 4
+  tokenizer_branch_length_mode: linear
+
+  phyla_dim: 256
+  phyla_use_leaf_tokens: true
+  phyla_use_split_tokens: false
+  phyla_use_global_context: true
+  phyla_global_context_scale: 1.0
+  phyla_use_clade_context: true
+  phyla_clade_context_scale: 1.0
+
+  autoregressive_head_mode: structured_subset
+  autoregressive_use_start_topology_conditioning: true
+  autoregressive_start_topology_conditioning_mode: frozen_case_probe_additive
+  autoregressive_start_topology_code_dim: 64
+  autoregressive_frozen_start_case_embedding_path: ${PHYLAFLOW_ARTIFACT_ROOT}/start_tree_metric_encoder/ds1ds8_joint_metric_start_table.pt
+  autoregressive_frozen_start_case_adapter_mode: mlp2
+  autoregressive_frozen_start_case_adapter_hidden_dim: 512
+
+  first_hit_head_use_phase_input: true
+  first_hit_head_phase_hidden_dim: 128
+  first_hit_head_mode: frozen_start_case_mlp
+  first_hit_head_num_cases: 4302
+  first_hit_head_case_dim: 64
+  first_hit_frozen_start_case_embedding_path: ${PHYLAFLOW_ARTIFACT_ROOT}/start_tree_metric_encoder/ds1ds8_joint_metric_start_table.pt
+  first_hit_frozen_start_case_adapter_mode: mlp2
+  first_hit_frozen_start_case_adapter_hidden_dim: 256
+
+trainer:
+  seed: 42
+  lr: 0.002
+  optimizer_name: adamw
+  epochs: 200
+  num_warmup_steps: 0
+  checkpoint_dir: ${PHYLAFLOW_OUTPUT_ROOT}/checkpoints/final_model
+  steps_callback: 500
+
+  phyla_precomputed_embeddings_path: ${PHYLAFLOW_ARTIFACT_ROOT}/phyla_embeddings
+
+  velocity_loss_mode: plain
+  velocity_loss_plain_weight: 1.0
+  training_step_velocity_weight: 1.0
+  training_step_autoregressive_weight: 0.2
+  training_step_separate_optimizer_steps: true
+
+  autoregressive_use_time: true
+
+  velocity_first_hit_head_weight: 10.0
+  velocity_first_hit_head_use_at_sampling: true
+  velocity_first_hit_loss_tol: 0.0001
+  velocity_first_hit_false_positive_mass_weight: 5.0
+  velocity_logtau_all_weight: 2.0
+  velocity_logtau_first_over_weight: 10.0
+  velocity_event_weight: 10.0
+  velocity_event_precision_weight: 10.0
+  velocity_event_precision_margin: 1.0
+
+  velocity_probe_direct_set_loss: true
+  velocity_probe_direct_set_anchor_only: true
+  velocity_probe_direct_set_target_negative_weight: 1.0
+  training_step_probe_parity_joint_update: true
+
+  sampling_discrete_phase_rollout_use_at_sampling: true
+  sampling_discrete_phase_exact_boundary_step_use_at_sampling: true
+  sampling_discrete_phase_max_phases: 8
+  sampling_max_steps: 128
+  sampling_max_events: 500
+  sampling_random_fixed_pair_bank_use_at_sampling: true
+  sampling_use_inference_mode: true
+
+  sample_metrics_trace_path: ${PHYLAFLOW_OUTPUT_ROOT}/metrics/final_model_metrics.jsonl
+  sample_metrics_num_pairs: 42
+  sample_metrics_unseen_start_eval: true
+  sample_metrics_unseen_start_seed: 20260430
+  sample_metrics_unseen_pair_selection_mode: random_bank
+  sample_metrics_unseen_start_metric_encoder_path: ${PHYLAFLOW_ARTIFACT_ROOT}/start_tree_metric_encoder/start_tree_metric_encoder.pt
+
+data:
+  short_run_root: ${PHYLAFLOW_DATA_ROOT}/short_run_data_DS1-8
+  short_run_dataset_ids: [DS1, DS2, DS3, DS4, DS5, DS6, DS7, DS8]
+  trprobs_sample_count_per_file: 1000
+
+  batch_size: 1
+  num_workers: 0
+
+  overfit_full_path_control_mode: true
+  overfit_full_path_control_use_discrete_phase_time: true
+  overfit_full_path_control_seed: 2026050318
+  overfit_virtual_epoch_size: 8000
+  overfit_fixed_pair: true
+  overfit_fixed_pair_group_by_json_metadata: true

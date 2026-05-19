@@ -1,0 +1,18 @@
+torch
+pytorch-lightning
+numpy
+scipy
+einops
+ete3
+biopython
+networkx
+PyYAML
+tqdm
+matplotlib
+pytest
+scikit-bio
+wandb
+
+# Required only when generating Phyla sequence embeddings from raw sequences.
+mamba-ssm
+
