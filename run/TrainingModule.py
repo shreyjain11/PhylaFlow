@@ -55,13 +55,10 @@ class TrainingModule(
         training_sampling_frequency: int = 200,
         training_sampling_start: int = 500,
         training_sampling_dt_base: float = 0.02,
-        sampling_fixed_dt_base: float | None = None,
         sampling_max_steps: int | None = 256,
         sampling_max_events: int | None = None,
-        sampling_max_autoregressive_merges_per_boundary: int = -1,
         training_sampling_stop_on_zero_rf: bool = False,
         training_sampling_stop_rf_threshold: float | None = None,
-        num_samples: int = 10,
         dt: float = 0.1,
         # Figure out how to do typing here
         global_splits=None,
@@ -69,24 +66,11 @@ class TrainingModule(
         verbose: bool = False,
         phyla_checkpoint_path=None,
         phyla_precomputed_embeddings_path: str | None = None,
-        velocity_loss_mode: str = "weighted",
-        velocity_loss_plain_weight: float = 0.5,
         velocity_sign_eps: float = 1e-3,
         training_step_velocity_weight: float = 1.0,
         training_step_autoregressive_weight: float = 1.0,
         training_step_gradient_clip_val: float = 1.0,
-        training_step_separate_optimizer_steps: bool = False,
-        training_step_verbose_logging_enabled: bool = False,
-        autoregressive_use_time: bool = False,
-        autoregressive_target_mode: str = "scheduled",
         autoregressive_polytomy_choosing_weight: float = 1.0,
-        autoregressive_rollin_prob: float = 0.0,
-        autoregressive_dagger_prob: float = 0.0,
-        autoregressive_dagger_max_steps: int = 4,
-        autoregressive_structure_perturb_prob: float = 0.0,
-        autoregressive_structure_perturb_mode: str = "random_wrong_pair",
-        velocity_length_jitter_prob: float = 0.0,
-        velocity_length_jitter_scale: float = 0.0,
         velocity_dt_candidate_weight: float = 0.0,
         velocity_dt_hit_weight: float = 0.0,
         velocity_logtau_all_weight: float = 0.0,
@@ -102,18 +86,6 @@ class TrainingModule(
         velocity_first_hit_head_weight: float = 0.0,
         velocity_first_hit_loss_tol: float = 0.01,
         velocity_first_hit_false_positive_mass_weight: float = 0.0,
-        velocity_first_hit_head_use_at_sampling: bool = False,
-        velocity_probe_direct_set_loss: bool = False,
-        velocity_probe_direct_set_anchor_only: bool = False,
-        velocity_probe_direct_set_target_negative_weight: float = 1.0,
-        velocity_probe_direct_set_positive_reweight: bool = False,
-        velocity_probe_direct_set_include_base_samples: bool = False,
-        velocity_probe_direct_set_positive_reweight_power: float = 1.0,
-        velocity_probe_direct_set_positive_reweight_max: float | None = None,
-        velocity_probe_direct_set_loss_weight: float = 1.0,
-        training_step_probe_parity_joint_update: bool = False,
-        sampling_discrete_phase_rollout_use_at_sampling: bool = False,
-        sampling_discrete_phase_exact_boundary_step_use_at_sampling: bool = False,
         sampling_discrete_phase_max_phases: int = 8,
         sample_metrics_trace_path: str | None = None,
         sample_metrics_num_pairs: int = 1,
@@ -123,8 +95,6 @@ class TrainingModule(
         sample_metrics_unseen_start_metric_encoder_path: str | None = None,
         sample_metrics_unseen_pair_selection_mode: str = "random_bank",
         sample_metrics_unseen_start_max_duplicate_tries: int = 100,
-        sample_metrics_batched_discrete_phase_enabled: bool = True,
-        sample_metrics_reuse_tokenizer_edge_lengths_enabled: bool = False,
         sample_metrics_relaxed_likelihood_enabled: bool = False,
         sample_metrics_branch_relaxer_checkpoint_path: str | None = None,
         sample_metrics_mrbayes20k_enabled: bool = False,
@@ -153,14 +123,6 @@ class TrainingModule(
         branch_relax_hidden_dim: int = 256,
         branch_relax_likelihood_dataset_id: str | None = None,
         branch_relax_likelihood_metric_enabled: bool = False,
-        sampling_disable_inner_logging: bool = True,
-        sampling_blocked_edge_floor: float | None = None,
-        sampling_random_fixed_pair_bank_use_at_sampling: bool = False,
-        velocity_first_hit_sampling_max_edges: int = -1,
-        velocity_first_hit_sampling_fallback_threshold: int = -1,
-        velocity_first_hit_sampling_fallback_top_k: int = -1,
-        sampling_use_inference_mode: bool = False,
-        **_removed_options,
     ):
         super().__init__()
         self.model = model
@@ -182,11 +144,6 @@ class TrainingModule(
         self.training_sampling_start = training_sampling_start
         self._next_training_sample_step = None
         self.training_sampling_dt_base = float(training_sampling_dt_base)
-        self.sampling_fixed_dt_base = (
-            None
-            if sampling_fixed_dt_base is None
-            else float(sampling_fixed_dt_base)
-        )
         self.sampling_max_steps = (
             None
             if sampling_max_steps is None or int(sampling_max_steps) < 0
@@ -200,25 +157,18 @@ class TrainingModule(
             if sampling_max_events is None or int(sampling_max_events) < 0
             else int(sampling_max_events)
         )
-        self.sampling_max_autoregressive_merges_per_boundary = int(
-            sampling_max_autoregressive_merges_per_boundary
-        )
         self.training_sampling_stop_on_zero_rf = bool(training_sampling_stop_on_zero_rf)
         self.training_sampling_stop_rf_threshold = (
             None
             if training_sampling_stop_rf_threshold is None
             else float(training_sampling_stop_rf_threshold)
         )
-        self.num_samples = num_samples
         self.dt = dt
         self.training_step_gradient_clip_val = float(training_step_gradient_clip_val)
         self.train_tokenized_trees = None
         self.train_batched_time = None
         self.train_tree = None
         self._cached_harness_sampling_pairs = {}
-        self.sampling_random_fixed_pair_bank_use_at_sampling = bool(
-            sampling_random_fixed_pair_bank_use_at_sampling
-        )
 
         self.automatic_optimization = False
         self.logger_ = logger
@@ -282,17 +232,6 @@ class TrainingModule(
                 f"got {optimizer_name!r}."
             )
 
-        valid_velocity_loss_modes = {"plain", "weighted", "blended"}
-        if velocity_loss_mode not in valid_velocity_loss_modes:
-            raise ValueError(
-                f"Invalid velocity_loss_mode={velocity_loss_mode!r}. "
-                f"Expected one of {sorted(valid_velocity_loss_modes)}."
-            )
-        if not (0.0 <= float(velocity_loss_plain_weight) <= 1.0):
-            raise ValueError(
-                "velocity_loss_plain_weight must be in [0, 1], "
-                f"got {velocity_loss_plain_weight}."
-            )
         if float(velocity_sign_eps) < 0.0:
             raise ValueError(
                 f"velocity_sign_eps must be non-negative, got {velocity_sign_eps}."
@@ -307,24 +246,10 @@ class TrainingModule(
                 "training_step_autoregressive_weight must be non-negative, "
                 f"got {training_step_autoregressive_weight}."
             )
-        valid_autoregressive_target_modes = {"scheduled", "ready_alternatives"}
-        if autoregressive_target_mode not in valid_autoregressive_target_modes:
-            raise ValueError(
-                f"Invalid autoregressive_target_mode={autoregressive_target_mode!r}. "
-                f"Expected one of {sorted(valid_autoregressive_target_modes)}."
-            )
         if self.training_sampling_dt_base <= 0.0:
             raise ValueError(
                 "training_sampling_dt_base must be > 0, "
                 f"got {training_sampling_dt_base}."
-            )
-        if (
-            self.sampling_fixed_dt_base is not None
-            and self.sampling_fixed_dt_base <= 0.0
-        ):
-            raise ValueError(
-                "sampling_fixed_dt_base must be > 0 when provided, "
-                f"got {sampling_fixed_dt_base}."
             )
         if sampling_max_steps is not None and int(sampling_max_steps) == 0:
             raise ValueError(
@@ -336,55 +261,10 @@ class TrainingModule(
                 "sampling_max_events must be >= 1 or < 0 for uncapped, "
                 f"got {sampling_max_events}."
             )
-        if int(sampling_max_autoregressive_merges_per_boundary) == 0:
-            raise ValueError(
-                "sampling_max_autoregressive_merges_per_boundary must be >= 1 or < 0 "
-                f"for uncapped, got {sampling_max_autoregressive_merges_per_boundary}."
-            )
         if self.training_step_gradient_clip_val < 0.0:
             raise ValueError(
                 "training_step_gradient_clip_val must be >= 0, "
                 f"got {training_step_gradient_clip_val}."
-            )
-        valid_structure_perturb_modes = {"random_wrong_pair", "model_wrong_pair"}
-        if (
-            autoregressive_structure_perturb_mode
-            not in valid_structure_perturb_modes
-        ):
-            raise ValueError(
-                "Invalid autoregressive_structure_perturb_mode="
-                f"{autoregressive_structure_perturb_mode!r}. Expected one of "
-                f"{sorted(valid_structure_perturb_modes)}."
-            )
-        if not (0.0 <= float(autoregressive_rollin_prob) <= 1.0):
-            raise ValueError(
-                "autoregressive_rollin_prob must be in [0, 1], "
-                f"got {autoregressive_rollin_prob}."
-            )
-        if not (0.0 <= float(autoregressive_dagger_prob) <= 1.0):
-            raise ValueError(
-                "autoregressive_dagger_prob must be in [0, 1], "
-                f"got {autoregressive_dagger_prob}."
-            )
-        if int(autoregressive_dagger_max_steps) < 1:
-            raise ValueError(
-                "autoregressive_dagger_max_steps must be >= 1, "
-                f"got {autoregressive_dagger_max_steps}."
-            )
-        if not (0.0 <= float(autoregressive_structure_perturb_prob) <= 1.0):
-            raise ValueError(
-                "autoregressive_structure_perturb_prob must be in [0, 1], "
-                f"got {autoregressive_structure_perturb_prob}."
-            )
-        if not (0.0 <= float(velocity_length_jitter_prob) <= 1.0):
-            raise ValueError(
-                "velocity_length_jitter_prob must be in [0, 1], "
-                f"got {velocity_length_jitter_prob}."
-            )
-        if float(velocity_length_jitter_scale) < 0.0:
-            raise ValueError(
-                "velocity_length_jitter_scale must be non-negative, "
-                f"got {velocity_length_jitter_scale}."
             )
         if float(velocity_dt_candidate_weight) < 0.0:
             raise ValueError(
@@ -458,35 +338,14 @@ class TrainingModule(
                 "sampling_discrete_phase_max_phases must be >= 1, "
                 f"got {sampling_discrete_phase_max_phases}."
             )
-        self.velocity_loss_mode = velocity_loss_mode
-        self.velocity_loss_plain_weight = float(velocity_loss_plain_weight)
         self.velocity_sign_eps = float(velocity_sign_eps)
         self.training_step_velocity_weight = float(training_step_velocity_weight)
         self.training_step_autoregressive_weight = float(
             training_step_autoregressive_weight
         )
-        self.training_step_separate_optimizer_steps = bool(
-            training_step_separate_optimizer_steps
-        )
-        self.training_step_verbose_logging_enabled = bool(
-            training_step_verbose_logging_enabled
-        )
-        self.autoregressive_use_time = bool(autoregressive_use_time)
-        self.autoregressive_target_mode = str(autoregressive_target_mode)
         self.autoregressive_polytomy_choosing_weight = float(
             autoregressive_polytomy_choosing_weight
         )
-        self.autoregressive_rollin_prob = float(autoregressive_rollin_prob)
-        self.autoregressive_dagger_prob = float(autoregressive_dagger_prob)
-        self.autoregressive_dagger_max_steps = int(autoregressive_dagger_max_steps)
-        self.autoregressive_structure_perturb_prob = float(
-            autoregressive_structure_perturb_prob
-        )
-        self.autoregressive_structure_perturb_mode = str(
-            autoregressive_structure_perturb_mode
-        )
-        self.velocity_length_jitter_prob = float(velocity_length_jitter_prob)
-        self.velocity_length_jitter_scale = float(velocity_length_jitter_scale)
         self.velocity_dt_candidate_weight = float(velocity_dt_candidate_weight)
         self.velocity_dt_hit_weight = float(velocity_dt_hit_weight)
         self.velocity_logtau_all_weight = float(velocity_logtau_all_weight)
@@ -510,59 +369,7 @@ class TrainingModule(
         self.velocity_first_hit_false_positive_mass_weight = float(
             velocity_first_hit_false_positive_mass_weight
         )
-        self.velocity_first_hit_head_use_at_sampling = bool(
-            velocity_first_hit_head_use_at_sampling
-        )
-        self.sampling_blocked_edge_floor = (
-            None
-            if sampling_blocked_edge_floor is None
-            else float(sampling_blocked_edge_floor)
-        )
-        self.velocity_first_hit_sampling_max_edges = int(
-            velocity_first_hit_sampling_max_edges
-        )
-        self.velocity_first_hit_sampling_fallback_threshold = int(
-            velocity_first_hit_sampling_fallback_threshold
-        )
-        self.velocity_first_hit_sampling_fallback_top_k = int(
-            velocity_first_hit_sampling_fallback_top_k
-        )
         self.velocity_first_hit_predictor_mode = "base"
-        self.velocity_probe_direct_set_loss = bool(
-            velocity_probe_direct_set_loss
-        )
-        self.velocity_probe_direct_set_anchor_only = bool(
-            velocity_probe_direct_set_anchor_only
-        )
-        self.velocity_probe_direct_set_target_negative_weight = float(
-            velocity_probe_direct_set_target_negative_weight
-        )
-        self.velocity_probe_direct_set_positive_reweight = bool(
-            velocity_probe_direct_set_positive_reweight
-        )
-        self.velocity_probe_direct_set_include_base_samples = bool(
-            velocity_probe_direct_set_include_base_samples
-        )
-        self.velocity_probe_direct_set_positive_reweight_power = float(
-            velocity_probe_direct_set_positive_reweight_power
-        )
-        self.velocity_probe_direct_set_positive_reweight_max = (
-            None
-            if velocity_probe_direct_set_positive_reweight_max is None
-            else float(velocity_probe_direct_set_positive_reweight_max)
-        )
-        self.velocity_probe_direct_set_loss_weight = float(
-            velocity_probe_direct_set_loss_weight
-        )
-        self.training_step_probe_parity_joint_update = bool(
-            training_step_probe_parity_joint_update
-        )
-        self.sampling_discrete_phase_rollout_use_at_sampling = bool(
-            sampling_discrete_phase_rollout_use_at_sampling
-        )
-        self.sampling_discrete_phase_exact_boundary_step_use_at_sampling = bool(
-            sampling_discrete_phase_exact_boundary_step_use_at_sampling
-        )
         self.sampling_discrete_phase_max_phases = int(
             sampling_discrete_phase_max_phases
         )
@@ -587,12 +394,6 @@ class TrainingModule(
         ).strip().lower()
         self.sample_metrics_unseen_start_max_duplicate_tries = max(
             1, int(sample_metrics_unseen_start_max_duplicate_tries)
-        )
-        self.sample_metrics_batched_discrete_phase_enabled = bool(
-            sample_metrics_batched_discrete_phase_enabled
-        )
-        self.sample_metrics_reuse_tokenizer_edge_lengths_enabled = bool(
-            sample_metrics_reuse_tokenizer_edge_lengths_enabled
         )
         self.sample_metrics_relaxed_likelihood_enabled = bool(
             sample_metrics_relaxed_likelihood_enabled
@@ -704,8 +505,6 @@ class TrainingModule(
                 hidden_dim=int(branch_relax_hidden_dim),
             )
         self._harness_sampling_frozen_start_bank_base = None
-        self.sampling_disable_inner_logging = bool(sampling_disable_inner_logging)
-        self.sampling_use_inference_mode = bool(sampling_use_inference_mode)
         self._posterior_reference_bundle_cache = {}
 
     def on_train_start(self):
@@ -828,29 +627,28 @@ class TrainingModule(
         opt = self.optimizers()
         opt.zero_grad()
 
-        velocity_training_batch = batch
-        autoregressive_training_batch = batch
-        control_mode = bool(batch.get("_full_path_control_mode", False))
-        probe_parity_joint = bool(
-            control_mode and self.training_step_probe_parity_joint_update
+        full_path_velocity_samples = batch.get("full_path_velocity_samples") or []
+        full_path_autoregressive_samples = (
+            batch.get("full_path_autoregressive_samples") or []
         )
-
-        if control_mode:
-            full_path_velocity_samples = batch.get("full_path_velocity_samples") or []
-            full_path_autoregressive_samples = (
-                batch.get("full_path_autoregressive_samples") or []
+        if not full_path_velocity_samples:
+            raise RuntimeError(
+                "Production DS training requires full_path_velocity_samples in every batch."
             )
-            if full_path_velocity_samples:
-                velocity_training_batch = _build_velocity_replay_batch(
-                    self,
-                    full_path_velocity_samples,
-                )
-                velocity_training_batch["_use_full_path_control_velocity_loss"] = True
-            if full_path_autoregressive_samples:
-                autoregressive_training_batch = _build_autoregressive_replay_batch(
-                    self,
-                    full_path_autoregressive_samples,
-                )
+        if not full_path_autoregressive_samples:
+            raise RuntimeError(
+                "Production DS training requires full_path_autoregressive_samples in every batch."
+            )
+
+        velocity_training_batch = _build_velocity_full_path_batch(
+            self,
+            full_path_velocity_samples,
+        )
+        velocity_training_batch["_use_full_path_control_velocity_loss"] = True
+        autoregressive_training_batch = _build_autoregressive_full_path_batch(
+            self,
+            full_path_autoregressive_samples,
+        )
 
         def _step_optimizer():
             if self.training_step_gradient_clip_val > 0.0:
@@ -891,13 +689,9 @@ class TrainingModule(
         }
         logs.update(velocity_metric_logs)
 
-        if self.training_step_separate_optimizer_steps and not probe_parity_joint:
-            self.manual_backward(loss_vel)
-            _step_optimizer()
-
         logs_ar = self.step(
             autoregressive_training_batch,
-            eval=control_mode,
+            eval=True,
             autoregressive=True,
         )
         if "loss" not in logs_ar:
@@ -922,19 +716,10 @@ class TrainingModule(
             logs["train/branch_relax_loss_scaled"] = branch_relax_loss.detach()
             logs.update(branch_relax_logs)
 
-        if probe_parity_joint:
-            total_loss = loss_vel + loss_ar
-            logs["train/probe_parity_joint_loss_scaled"] = total_loss.detach()
-            self.manual_backward(total_loss)
-            _step_optimizer()
-        elif self.training_step_separate_optimizer_steps:
-            total_loss = loss_ar
-            self.manual_backward(loss_ar)
-            _step_optimizer()
-        else:
-            total_loss = loss_vel + loss_ar
-            self.manual_backward(total_loss)
-            _step_optimizer()
+        total_loss = loss_vel + loss_ar
+        logs["train/joint_loss_scaled"] = total_loss.detach()
+        self.manual_backward(total_loss)
+        _step_optimizer()
 
         logs["loss"] = total_loss.detach()
 
@@ -1066,17 +851,7 @@ class TrainingModule(
             "grad_norm_mean", mean_grad, prog_bar=False, on_step=True
         )
 
-        # Print a warning if exploding
-        if self.training_step_verbose_logging_enabled and max_grad > 1:
-            print(
-                f"[Warning] Gradient norm unusually high: max={max_grad:.2e}, mean={mean_grad:.2e}"
-            )
-
         self._log_scalar_filtered("grad_norm_total", total)
-        if self.training_step_verbose_logging_enabled:
-            print(
-                f"step {self.global_step:4d}  total_grad_norm = {total:.2f} mean is {mean_grad:.2f} max is {max_grad:.2f}"
-            )
         if self.record:
             self._wandb_log_filtered(
                 {

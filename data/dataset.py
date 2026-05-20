@@ -36,7 +36,6 @@ from model.treeTokenizer import TreeFeatureTokenizer
 from utils.random_tree import Tree
 from ete3 import Tree as EteTree
 from utils.utils import remove_bit
-from utils.bhv_movie import build_tree_from_splits
 
 
 def _detach_tensors(value):
@@ -65,124 +64,12 @@ def _include_fixed_pair_json_path_for_role(path: Path, role: str) -> bool:
     return True
 
 
-def _load_full_path_control_extra_velocity_samples(json_path: Optional[str]) -> List[Dict[str, Any]]:
-    if not json_path:
-        return []
-    payload = json.loads(Path(json_path).read_text())
-    if isinstance(payload, dict):
-        payload = payload.get("samples", [])
-    if not isinstance(payload, list):
-        raise ValueError(
-            "overfit_full_path_control_extra_velocity_samples_json_path must point "
-            "to a JSON list or an object with a 'samples' list."
-        )
-
-    samples: List[Dict[str, Any]] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        if not item.get("newick_tree"):
-            continue
-        velocity = item.get("velocity") or {}
-        samples.append(
-            {
-                "path_index": int(item.get("path_index", item.get("phase_idx", 0))),
-                "phase_idx": int(item.get("phase_idx", item.get("path_index", 0))),
-                "newick_tree": str(item["newick_tree"]),
-                "target_tree": str(item.get("target_tree", "")),
-                "velocity": {
-                    int(k): float(v) for k, v in dict(velocity).items()
-                },
-                "velocity_next_boundary_tree": (
-                    None
-                    if item.get("velocity_next_boundary_tree") in {None, ""}
-                    else str(item.get("velocity_next_boundary_tree"))
-                ),
-                "timepoint": float(item.get("timepoint", item.get("phase_idx", 0.0))),
-                "num_leaves": int(
-                    item.get("num_leaves", int(Tree(str(item["newick_tree"])).n_leaves))
-                ),
-                "anchor_family": (
-                    None
-                    if item.get("anchor_family") in {None, ""}
-                    else str(item.get("anchor_family"))
-                ),
-                "source_checkpoint": (
-                    None
-                    if item.get("source_checkpoint") in {None, ""}
-                    else str(item.get("source_checkpoint"))
-                ),
-                "bank_group_key": (
-                    None
-                    if item.get("bank_group_key") in {None, ""}
-                    else str(item.get("bank_group_key"))
-                ),
-            }
-        )
-    return samples
-
-
 class SizeDetector:
     def __init__(self, max_aa=None):
         self.max_aa = max_aa
 
     def update_max_aa(self, new_max_aa):
         self.max_aa = new_max_aa
-
-
-def resolve_training_target_tree_for_prefix(
-    start_tree_newick: str,
-    target_tree_newick: str,
-    prefix_k: int,
-) -> str:
-    if int(prefix_k) < 0:
-        return target_tree_newick
-
-    boundary_paths = return_tree_boundary_merge_paths(
-        start_tree_newick,
-        target_tree_newick,
-        legacy_training_semantics=False,
-    )
-    if not boundary_paths:
-        return target_tree_newick
-
-    prefix_idx = min(int(prefix_k), len(boundary_paths) - 1)
-    return boundary_paths[prefix_idx]["end_newick"]
-
-
-def resolve_training_target_tree_for_event_prefix(
-    start_tree_newick: str,
-    target_tree_newick: str,
-    event_prefix_count: int,
-) -> str:
-    event_prefix_count = int(event_prefix_count)
-    if event_prefix_count < 0:
-        return target_tree_newick
-    if event_prefix_count == 0:
-        return start_tree_newick
-
-    boundary_paths = return_tree_boundary_merge_paths(
-        start_tree_newick,
-        target_tree_newick,
-        legacy_training_semantics=False,
-    )
-    if not boundary_paths:
-        return target_tree_newick
-
-    remaining_events = event_prefix_count
-    current_tree = start_tree_newick
-    for path in boundary_paths:
-        events = path["events"]
-        if remaining_events == 0:
-            return current_tree
-        if remaining_events < len(events):
-            return path["events"][remaining_events]["newick"]
-        if remaining_events == len(events):
-            return path["end_newick"]
-        remaining_events -= len(events)
-        current_tree = path["end_newick"]
-
-    return target_tree_newick
 
 
 def _remap_tree_leaf_names_to_match_reference(
@@ -283,18 +170,6 @@ class TreeDataset(Dataset):
         mrbayes_root: str,
         filter_ids: Optional[List[str]] = None,
         validation=False,
-        sanity_check: bool = False,
-        random_sanity_check: bool = False,
-        overfit_velocity_zero: bool = False,
-        overfit_velocity_event_states: bool = False,
-        overfit_velocity_orthant_start_states: bool = False,
-        overfit_velocity_explicit_boundary_end_states: bool = False,
-        overfit_velocity_fixed_timepoints: Optional[List[float]] = None,
-        overfit_velocity_explicit_boundary_label_scale_mode: str = "local",
-        overfit_boundary_prefix_k: int = -1,
-        overfit_start_boundary_prefix_k: int = -1,
-        overfit_event_prefix_count: int = -1,
-        overfit_event_horizon: int = 1,
         overfit_fixed_pair: bool = False,
         overfit_fixed_pair_start_tree_newick: Optional[str] = None,
         overfit_fixed_pair_start_tree_json_path: Optional[str] = None,
@@ -304,20 +179,8 @@ class TreeDataset(Dataset):
         overfit_fixed_pair_target_tree_json_path: Optional[str] = None,
         overfit_fixed_pair_target_tree_json_paths: Optional[List[str]] = None,
         overfit_fixed_pair_target_tree_json_dir: Optional[str] = None,
-        overfit_split_multi_subset_events: bool = False,
-        overfit_full_path_control_mode: bool = False,
         overfit_full_path_control_seed: int = 42,
-        overfit_full_path_control_use_discrete_phase_time: bool = False,
-        overfit_full_path_control_terminal_label_mode: str = "phase_start",
-        overfit_full_path_control_terminal_include_ar_states: bool = False,
-        overfit_full_path_control_terminal_include_target_one_split_off: bool = False,
-        overfit_full_path_control_extra_velocity_samples_json_path: Optional[str] = None,
-        overfit_oracle_prefix_start_prob: float = 0.0,
-        overfit_oracle_prefix_max_fraction: float = 0.5,
-        overfit_fixed_pair_group_by_json_metadata: bool = False,
-        overfit_fixed_pair_reference_tree_from_target_bank: bool = False,
         overfit_virtual_epoch_size: Optional[int] = None,
-        overfit_fixed_pair_cache_virtual_index_selection: bool = False,
         posterior_trprobs_root: Optional[str] = None,
         posterior_dataset_id: Optional[Any] = None,
         posterior_dataset_ids: Optional[Any] = None,
@@ -348,69 +211,8 @@ class TreeDataset(Dataset):
         alphabet = str(random_distribution_alphabet or "ACGT").strip()
         self.random_distribution_alphabet = alphabet or "ACGT"
         self.trprobs_sample_count_per_file = max(0, int(trprobs_sample_count_per_file))
-        self.overfit_velocity_zero = overfit_velocity_zero
-        self.overfit_velocity_event_states = bool(overfit_velocity_event_states)
-        self.overfit_velocity_orthant_start_states = bool(
-            overfit_velocity_orthant_start_states
-        )
-        self.overfit_velocity_explicit_boundary_end_states = bool(
-            overfit_velocity_explicit_boundary_end_states
-        )
-        self.overfit_velocity_fixed_timepoints = (
-            [float(t) for t in overfit_velocity_fixed_timepoints]
-            if overfit_velocity_fixed_timepoints
-            else None
-        )
-        label_scale_mode = str(overfit_velocity_explicit_boundary_label_scale_mode)
-        if label_scale_mode not in {"local", "remaining"}:
-            raise ValueError(
-                "overfit_velocity_explicit_boundary_label_scale_mode must be "
-                f"'local' or 'remaining', got {label_scale_mode!r}."
-            )
-        self.overfit_velocity_explicit_boundary_label_scale_mode = label_scale_mode
-        self.overfit_boundary_prefix_k = int(overfit_boundary_prefix_k)
-        self.overfit_start_boundary_prefix_k = int(overfit_start_boundary_prefix_k)
-        self.overfit_event_prefix_count = int(overfit_event_prefix_count)
-        self.overfit_event_horizon = max(1, int(overfit_event_horizon))
         self.overfit_fixed_pair = bool(overfit_fixed_pair)
-        self.overfit_full_path_control_mode = bool(overfit_full_path_control_mode)
         self.overfit_full_path_control_seed = int(overfit_full_path_control_seed)
-        self.overfit_full_path_control_use_discrete_phase_time = bool(
-            overfit_full_path_control_use_discrete_phase_time
-        )
-        terminal_label_mode = str(overfit_full_path_control_terminal_label_mode).lower()
-        if terminal_label_mode not in {"phase_start", "target"}:
-            raise ValueError(
-                "overfit_full_path_control_terminal_label_mode must be "
-                f"'phase_start' or 'target', got {terminal_label_mode!r}."
-            )
-        self.overfit_full_path_control_terminal_label_mode = terminal_label_mode
-        self.overfit_full_path_control_terminal_include_ar_states = bool(
-            overfit_full_path_control_terminal_include_ar_states
-        )
-        self.overfit_full_path_control_terminal_include_target_one_split_off = bool(
-            overfit_full_path_control_terminal_include_target_one_split_off
-        )
-        self.overfit_full_path_control_extra_velocity_samples = (
-            _load_full_path_control_extra_velocity_samples(
-                overfit_full_path_control_extra_velocity_samples_json_path
-            )
-        )
-        self.overfit_oracle_prefix_start_prob = float(
-            overfit_oracle_prefix_start_prob
-        )
-        self.overfit_oracle_prefix_max_fraction = float(
-            overfit_oracle_prefix_max_fraction
-        )
-        self.overfit_fixed_pair_group_by_json_metadata = bool(
-            overfit_fixed_pair_group_by_json_metadata
-        )
-        self.overfit_fixed_pair_reference_tree_from_target_bank = bool(
-            overfit_fixed_pair_reference_tree_from_target_bank
-        )
-        self.overfit_fixed_pair_cache_virtual_index_selection = bool(
-            overfit_fixed_pair_cache_virtual_index_selection
-        )
         self.overfit_virtual_epoch_size = (
             int(overfit_virtual_epoch_size)
             if overfit_virtual_epoch_size is not None
@@ -514,9 +316,7 @@ class TreeDataset(Dataset):
         self.overfit_fixed_pair_target_tree_newick_bank: List[str] = []
         self.overfit_fixed_pair_target_tree_bank_items: List[Dict[str, Any]] = []
         self._overfit_fixed_pair_target_tree_groups: Dict[str, List[Dict[str, Any]]] = {}
-        self.overfit_split_multi_subset_events = bool(
-            overfit_split_multi_subset_events
-        )
+        self.overfit_split_multi_subset_events = False
         self.size_detector = SizeDetector()
         # State tracker for adaptive batching (index, subtree_size, num_subtrees)
         # Default initialization
@@ -533,24 +333,18 @@ class TreeDataset(Dataset):
         self._cached_overfit_bank_selection_by_virtual_index: Dict[int, Dict[str, Any]] = {}
         self._cached_full_path_control_samples_by_key: Dict[
             Tuple[Any, ...],
-            Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]],
+            Tuple[List[Dict[str, Any]], List[Dict[str, Any]]],
         ] = {}
         self._frozen_full_path_control_selections: List[Dict[str, Any]] = []
         self._cached_posterior_trees_by_key: Dict[Tuple[Any, ...], List[str]] = {}
         self.random_tree = None
-        self.sanity_check = sanity_check
-        self.random_sanity_check = random_sanity_check
-
-        if self.sanity_check and self.random_sanity_check:
-            raise Exception("Cannot have both sanity_check and random_sanity_check enabled!")
 
         # Build index immediately; optionally preload
         self.build_index()
         self.set_overfit_fixed_pair_start_tree_bank(override_start_tree_bank)
         self.set_overfit_fixed_pair_target_tree_bank(override_target_tree_bank)
         if (
-            self.overfit_full_path_control_mode
-            and self.overfit_fixed_pair
+            self.overfit_fixed_pair
             and self.overfit_virtual_epoch_size is not None
             and len(self.overfit_fixed_pair_target_tree_newick_bank) > 1
         ):
@@ -667,13 +461,6 @@ class TreeDataset(Dataset):
         if not start_items or not target_items:
             return None, None
 
-        if not self.overfit_fixed_pair_group_by_json_metadata:
-            chosen_start = random.choice(start_items)
-            chosen_target = (
-                random.choice(target_items) if len(target_items) > 1 else target_items[0]
-            )
-            return chosen_start, chosen_target
-
         compatible_group_keys = sorted(
             set(self._overfit_fixed_pair_start_tree_groups.keys())
             & set(self._overfit_fixed_pair_target_tree_groups.keys())
@@ -740,29 +527,8 @@ class TreeDataset(Dataset):
         self._cached_full_path_control_samples_by_key.clear()
         return list(self.overfit_fixed_pair_target_tree_newick_bank)
 
-    def _oracle_prefix_candidates(
-        self,
-        start_tree_newick: str,
-        target_tree_newick: str,
-    ) -> List[str]:
-        boundary_paths = return_tree_boundary_merge_paths(
-            start_tree_newick,
-            target_tree_newick,
-            legacy_training_semantics=False,
-        )
-        candidates = [str(path["end_newick"]) for path in boundary_paths[:-1]]
-        if not candidates:
-            return []
-        max_fraction = float(self.overfit_oracle_prefix_max_fraction)
-        if 0.0 < max_fraction < 1.0:
-            keep = max(1, int(math.ceil(len(candidates) * max_fraction)))
-            candidates = candidates[:keep]
-        return candidates
-
     def _sample_overfit_fixed_pair_bank_selection(
         self,
-        *,
-        allow_oracle_prefix: bool,
     ) -> Optional[Dict[str, Any]]:
         chosen_start_item, chosen_target_item = (
             self._sample_matching_overfit_fixed_pair_bank_items()
@@ -789,18 +555,6 @@ class TreeDataset(Dataset):
             ),
         }
 
-        if allow_oracle_prefix:
-            oracle_prefix_candidates = self._oracle_prefix_candidates(
-                chosen_start_tree,
-                chosen_target_tree,
-            )
-            if oracle_prefix_candidates:
-                oracle_start_tree = random.choice(oracle_prefix_candidates)
-                selection["forced_start_tree_newick"] = str(oracle_start_tree)
-                selection["oracle_prefix_start_tree"] = str(oracle_start_tree)
-                selection["oracle_prefix_base_start_tree"] = str(chosen_start_tree)
-                selection["oracle_prefix_target_tree"] = str(chosen_target_tree)
-
         return selection
 
     def freeze_full_path_control_pair_bank(
@@ -825,9 +579,7 @@ class TreeDataset(Dataset):
         try:
             random.seed(int(seed))
             for _attempt in range(max(100, int(sample_count) * 50)):
-                selection = self._sample_overfit_fixed_pair_bank_selection(
-                    allow_oracle_prefix=False,
-                )
+                selection = self._sample_overfit_fixed_pair_bank_selection()
                 if selection is None:
                     break
                 start_tree = str(selection.get("forced_start_tree_newick"))
@@ -892,113 +644,16 @@ class TreeDataset(Dataset):
         target_tree_newick: str,
         base_start_tree_newick: Optional[str] = None,
     ) -> str:
-        resolved_target_tree = target_tree_newick
-        if (
-            self.overfit_start_boundary_prefix_k >= 0
-            and self.overfit_boundary_prefix_k >= 0
-            and (self.sanity_check or self.random_sanity_check)
-        ):
-            if base_start_tree_newick is None:
-                original_prefix = self.overfit_start_boundary_prefix_k
-                self.overfit_start_boundary_prefix_k = -1
-                try:
-                    base_start_tree = self.sample_random_tree(target_tree_newick)
-                finally:
-                    self.overfit_start_boundary_prefix_k = original_prefix
-            else:
-                base_start_tree = base_start_tree_newick
-            resolved_target_tree = resolve_training_target_tree_for_prefix(
-                base_start_tree,
-                target_tree_newick,
-                self.overfit_boundary_prefix_k,
-            )
-        else:
-            resolved_target_tree = resolve_training_target_tree_for_prefix(
-                start_tree_newick,
-                target_tree_newick,
-                self.overfit_boundary_prefix_k,
-            )
-
-        resolved_target_tree = resolve_training_target_tree_for_event_prefix(
-            start_tree_newick,
-            resolved_target_tree,
-            self.overfit_event_prefix_count,
-        )
         return _remap_tree_leaf_names_to_match_reference(
-            resolved_target_tree,
+            target_tree_newick,
             start_tree_newick,
         )
 
-    def _build_target_one_split_off_terminal_samples(
-        self,
-        target_tree: str,
-        *,
-        path_index: int,
-        timepoint: float,
-    ) -> List[Dict[str, Any]]:
-        target_obj = Tree(target_tree)
-        n_leaves = int(target_obj.n_leaves)
-        if n_leaves <= 3:
-            return []
-
-        masks, lengths = BHVEncoder().return_BHV_encoding(target_obj)
-        full_mask = (1 << n_leaves) - 1
-        split_lengths = {
-            int(mask): float(length)
-            for mask, length in zip(masks, lengths)
-            if int(mask) != 0 and length is not None and float(length) > 1e-8
-        }
-        if not split_lengths:
-            return []
-
-        removable_splits = []
-        for mask in split_lengths:
-            side_a = int(mask).bit_count()
-            side_b = int(full_mask ^ int(mask)).bit_count()
-            if min(side_a, side_b) > 1:
-                removable_splits.append(int(mask))
-
-        samples: List[Dict[str, Any]] = []
-        seen_newicks = set()
-        for removed_split in sorted(set(removable_splits)):
-            remaining_splits = [
-                split for split in split_lengths if int(split) != int(removed_split)
-            ]
-            try:
-                _, near_target_newick = build_tree_from_splits(
-                    remaining_splits,
-                    split_lengths,
-                    n_leaves,
-                    root_leaf=n_leaves - 1,
-                    mapping=target_obj.id_to_name,
-                )
-            except Exception:
-                continue
-            if near_target_newick in seen_newicks:
-                continue
-            seen_newicks.add(near_target_newick)
-            samples.append(
-                {
-                    "path_index": int(path_index),
-                    "newick_tree": str(near_target_newick),
-                    "timepoint": float(timepoint),
-                    "terminal_stop": False,
-                    "target_tree": str(target_tree),
-                    "terminal_hard_negative_kind": "target_minus_one_split",
-                    "removed_split": int(removed_split),
-                }
-            )
-
-        return samples
 
     @staticmethod
     def _clone_full_path_control_sample_groups(
-        groups: Tuple[
-            List[Dict[str, Any]],
-            List[Dict[str, Any]],
-            List[Dict[str, Any]],
-        ],
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        groups: Tuple[List[Dict[str, Any]], List[Dict[str, Any]]],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         cloned_groups: List[List[Dict[str, Any]]] = []
         for samples in groups:
             cloned_samples = []
@@ -1015,7 +670,7 @@ class TreeDataset(Dataset):
                     ]
                 cloned_samples.append(cloned)
             cloned_groups.append(cloned_samples)
-        return cloned_groups[0], cloned_groups[1], cloned_groups[2]
+        return cloned_groups[0], cloned_groups[1]
 
     def _full_path_control_samples_cache_key(
         self,
@@ -1029,19 +684,12 @@ class TreeDataset(Dataset):
             target_tree,
             pair.get("bank_group_key"),
             len(boundary_paths),
-            self.overfit_velocity_explicit_boundary_label_scale_mode,
-            bool(self.overfit_full_path_control_use_discrete_phase_time),
-            self.overfit_full_path_control_terminal_label_mode,
-            bool(self.overfit_full_path_control_terminal_include_ar_states),
-            bool(self.overfit_full_path_control_terminal_include_target_one_split_off),
-            len(self.overfit_full_path_control_extra_velocity_samples),
         )
 
     def _build_full_path_control_samples(
         self,
         pair: Dict[str, Any],
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
-        label_scale_mode = self.overfit_velocity_explicit_boundary_label_scale_mode
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         start_tree = str(pair["random_tree"])
         target_tree = str(pair["effective_target_tree"])
         boundary_paths = list(pair["boundary_paths"])
@@ -1064,51 +712,36 @@ class TreeDataset(Dataset):
 
         velocity_samples: List[Dict[str, Any]] = []
         autoregressive_samples: List[Dict[str, Any]] = []
-        terminal_samples: List[Dict[str, Any]] = []
-        prev_time = 0.0
         for path_index, path in enumerate(boundary_paths):
             source_tree = (
                 start_tree
                 if int(path_index) == 0
                 else str(boundary_paths[int(path_index) - 1]["end_newick"])
             )
-            path_start_time = (
-                float(path_index)
-                if self.overfit_full_path_control_use_discrete_phase_time
-                else float(prev_time)
-            )
+            path_start_time = float(path_index)
             velocity_newick, velocity = return_sampled_tree_orthant_velocity(
                 source_tree,
                 target_tree,
                 0.0,
                 legacy_training_semantics=False,
             )
-            scale = 1.0
-            if label_scale_mode == "remaining":
-                scale = 1.0 / max(1.0 - float(prev_time), 1e-6)
-            elif label_scale_mode != "local":
-                raise ValueError(
-                    f"Unknown overfit_velocity_explicit_boundary_label_scale_mode={label_scale_mode!r}."
-                )
             velocity_samples.append(
-                _attach_pair_group({
-                    "path_index": int(path_index),
-                    "newick_tree": str(velocity_newick),
-                    "target_tree": target_tree,
-                    "velocity": {
-                        int(k): float(v) * float(scale)
-                        for k, v in velocity.items()
-                    },
-                    "velocity_next_boundary_tree": str(path["start_newick"]),
-                    "timepoint": path_start_time,
-                    "num_leaves": int(Tree(source_tree).n_leaves),
-                })
+                _attach_pair_group(
+                    {
+                        "path_index": int(path_index),
+                        "newick_tree": str(velocity_newick),
+                        "target_tree": target_tree,
+                        "velocity": {
+                            int(k): float(v)
+                            for k, v in velocity.items()
+                        },
+                        "velocity_next_boundary_tree": str(path["start_newick"]),
+                        "timepoint": path_start_time,
+                        "num_leaves": int(Tree(source_tree).n_leaves),
+                    }
+                )
             )
-            boundary_time = (
-                float(path_index)
-                if self.overfit_full_path_control_use_discrete_phase_time
-                else float(path["global_time"])
-            )
+            boundary_time = float(path_index)
             boundary_events = []
             for event in path.get("events", []):
                 if not event.get("labels"):
@@ -1122,105 +755,20 @@ class TreeDataset(Dataset):
             boundary_events = _split_multi_label_training_events(boundary_events)
             for event in boundary_events:
                 autoregressive_samples.append(
-                    _attach_pair_group({
-                        "path_index": int(path_index),
-                        "newick": str(event["newick"]),
-                        "target_tree": target_tree,
-                        "labels": list(event["labels"]),
-                        "stop_after_merge": bool(
-                            event.get("stop_after_merge", False)
-                        ),
-                        "time": boundary_time,
-                    })
-                )
-                if self.overfit_full_path_control_terminal_include_ar_states:
-                    terminal_samples.append(
-                        _attach_pair_group({
+                    _attach_pair_group(
+                        {
                             "path_index": int(path_index),
-                            "newick_tree": str(event["newick"]),
-                            "timepoint": boundary_time,
-                            "terminal_stop": False,
+                            "newick": str(event["newick"]),
                             "target_tree": target_tree,
-                        })
-                    )
-            if self.overfit_full_path_control_terminal_label_mode == "phase_start":
-                terminal_samples.append(
-                    _attach_pair_group({
-                        "path_index": int(path_index),
-                        "newick_tree": str(source_tree),
-                        "timepoint": path_start_time,
-                        "terminal_stop": bool(
-                            int(path_index) == (len(boundary_paths) - 1)
-                        ),
-                        "target_tree": target_tree,
-                    })
-                )
-            else:
-                terminal_samples.append(
-                    _attach_pair_group({
-                        "path_index": int(path_index),
-                        "newick_tree": str(source_tree),
-                        "timepoint": path_start_time,
-                        "terminal_stop": False,
-                        "target_tree": target_tree,
-                    })
-                )
-            prev_time = boundary_time
-
-        if self.overfit_full_path_control_terminal_label_mode == "target":
-            target_time = (
-                float(len(boundary_paths))
-                if self.overfit_full_path_control_use_discrete_phase_time
-                else 1.0
-            )
-            terminal_samples.append(
-                _attach_pair_group({
-                    "path_index": int(len(boundary_paths)),
-                    "newick_tree": str(target_tree),
-                    "timepoint": target_time,
-                    "terminal_stop": True,
-                    "target_tree": target_tree,
-                })
-            )
-            if self.overfit_full_path_control_terminal_include_target_one_split_off:
-                for hard_negative in self._build_target_one_split_off_terminal_samples(
-                    target_tree,
-                    path_index=int(len(boundary_paths)),
-                    timepoint=target_time,
-                ):
-                    terminal_samples.append(
-                        _attach_pair_group(hard_negative)
-                    )
-
-        for extra_sample in self.overfit_full_path_control_extra_velocity_samples:
-            sample_group_key = extra_sample.get("bank_group_key")
-            pair_group_key = pair.get("bank_group_key")
-            if sample_group_key is not None and str(sample_group_key) != str(
-                pair_group_key
-            ):
-                continue
-            relabeled_sample = dict(extra_sample)
-            relabeled_sample["start_tree"] = start_tree
-            relabeled_sample["target_tree"] = target_tree
-            relabeled_sample["path_index"] = int(
-                extra_sample.get("path_index", extra_sample.get("phase_idx", 0))
-            )
-            if self.overfit_full_path_control_use_discrete_phase_time:
-                relabeled_sample["timepoint"] = float(
-                    extra_sample.get(
-                        "path_index",
-                        extra_sample.get("phase_idx", extra_sample.get("timepoint", 0.0)),
+                            "labels": list(event["labels"]),
+                            "stop_after_merge": bool(
+                                event.get("stop_after_merge", False)
+                            ),
+                            "time": boundary_time,
+                        }
                     )
                 )
-            else:
-                relabeled_sample["timepoint"] = float(
-                    extra_sample.get("timepoint", 0.0)
-                )
-            if pair_group_key is not None:
-                relabeled_sample["bank_group_key"] = str(pair_group_key)
-            velocity_samples.append(relabeled_sample)
-
-        result = (velocity_samples, autoregressive_samples, terminal_samples)
+        result = (velocity_samples, autoregressive_samples)
         self._cached_full_path_control_samples_by_key[cache_key] = (
             self._clone_full_path_control_sample_groups(result)
         )
@@ -1257,24 +805,8 @@ class TreeDataset(Dataset):
         real_tree,
         subtree_size: Optional[int] = None,
     ) -> Tuple[str, str]:
-        if self.overfit_start_boundary_prefix_k < 0:
-            start_tree = self.sample_random_tree(real_tree, subtree_size=subtree_size)
-            return start_tree, start_tree
-
-        original_prefix = self.overfit_start_boundary_prefix_k
-        self.overfit_start_boundary_prefix_k = -1
-        try:
-            base_random_tree = self.sample_random_tree(real_tree, subtree_size=subtree_size)
-        finally:
-            self.overfit_start_boundary_prefix_k = original_prefix
-
-        target_tree_newick = real_tree if isinstance(real_tree, str) else real_tree.write(format=1)
-        start_tree = resolve_training_target_tree_for_prefix(
-            base_random_tree,
-            target_tree_newick,
-            original_prefix,
-        )
-        return base_random_tree, start_tree
+        start_tree = self.sample_random_tree(real_tree, subtree_size=subtree_size)
+        return start_tree, start_tree
 
     def __len__(self) -> int:  # Required for torch Dataset
         if self.overfit_virtual_epoch_size is not None and len(self._ids) > 0:
@@ -1301,8 +833,6 @@ class TreeDataset(Dataset):
         meta = self._index[index]
         tree_paths = meta["tree_paths"]
         trees = self.load_posterior_trees_from_tfiles(tree_paths)
-        if self.sanity_check or self.random_sanity_check:
-            return ['((52:6.821929e-03,((((2:4.398080e-02,(((((145:8.657433e-03,91:4.622826e-03):2.222114e-02,((93:1.284674e-02,132:1.985680e-02):8.439914e-03,(((89:1.020633e-02,88:4.611548e-03):8.036501e-03,90:1.429933e-02):1.439583e-02,92:9.908956e-03):1.750425e-03):5.724766e-03):7.037225e-03,87:1.626403e-02):4.747258e-03,(((7:9.739291e-03,5:5.587849e-03):6.613494e-03,(150:1.664500e-02,152:1.724125e-02):1.823357e-02):1.534167e-03,(11:9.469409e-03,(61:5.838223e-04,8:8.467112e-03):4.839481e-03):1.478233e-02):5.742910e-03):1.842902e-02,9:3.628046e-02):4.929418e-03):4.712541e-03,82:4.185746e-02):3.380475e-03,(((((124:1.558528e-02,125:1.705412e-02):5.917463e-03,((102:2.129084e-02,155:9.638513e-03):4.271744e-03,(149:2.436750e-02,(106:2.722806e-02,(130:3.687226e-02,114:4.149299e-02):1.000061e-02):4.023099e-03):2.147868e-03):1.233641e-02):3.719823e-03,((((54:1.214695e-02,19:2.168458e-02):1.996561e-02,((((38:1.057892e-03,((36:7.753757e-04,(46:2.622027e-03,24:1.787443e-03):2.029430e-04):1.481560e-03,(58:1.714262e-04,37:2.458943e-04):2.601513e-03):1.274226e-04):2.389942e-03,56:1.949454e-03):1.489446e-02,(48:1.137571e-02,108:1.964277e-02):1.324782e-03):7.644887e-03,(((39:1.804400e-03,50:3.879771e-04):3.067958e-03,59:3.259752e-03):6.995533e-03,(((6:1.574761e-04,42:2.710545e-05):4.343268e-04,(33:2.616433e-03,41:6.108494e-06):1.184825e-03):1.058122e-02,(((14:6.407019e-05,35:1.283827e-03):3.152093e-03,40:3.500127e-03):1.097830e-02,((((107:1.333270e-03,84:3.209979e-04):2.963766e-03,43:1.910537e-03):1.115617e-03,31:2.194031e-03):1.856883e-03,((47:2.408071e-03,(109:3.641932e-04,49:1.155934e-04):3.415181e-03):2.683443e-03,34:2.281842e-03):4.028540e-03):3.179844e-03):2.139192e-03):1.070869e-03):2.343303e-03):8.589032e-03):3.753159e-03,(((((((136:1.054858e-03,45:1.777442e-04):9.470442e-04,18:8.069737e-04):2.680686e-03,51:1.513089e-03):1.472587e-02,(20:1.791231e-02,((17:6.050183e-03,(((53:2.324964e-03,((100:9.971849e-04,85:1.361781e-03):1.047096e-03,131:4.906427e-03):7.243432e-04):1.869450e-03,62:6.183967e-03):2.898555e-03,(55:6.269062e-03,(13:5.770393e-03,97:4.514650e-03):3.446166e-03):3.282607e-03):1.379633e-03):2.240766e-02,((120:1.168439e-03,25:4.536840e-03):2.917149e-03,(((((63:3.576971e-04,((104:6.782281e-04,105:8.341392e-05):2.542285e-03,(103:2.267958e-03,148:4.839063e-05):2.790594e-04):1.147993e-03):3.031773e-04,29:1.385090e-03):2.901980e-04,(28:1.255159e-03,30:8.757002e-04):1.490579e-03):1.139399e-03,26:2.656695e-03):5.694807e-04,116:5.345046e-03):3.441066e-03):2.961141e-03):5.676048e-03):6.805834e-03):5.342581e-03,(((22:5.519097e-04,21:5.260546e-04):1.063093e-03,23:1.409785e-03):2.054762e-02,99:1.438413e-02):1.228856e-02):1.107615e-03,(((95:9.283287e-03,98:1.739668e-02):6.505733e-03,((16:1.866647e-03,(153:9.563353e-04,15:6.850920e-04):5.016234e-04):6.647760e-03,60:6.967831e-03):1.297224e-02):6.103056e-04,((111:1.652701e-02,(113:1.019696e-02,(118:1.794353e-02,112:9.963961e-03):5.803295e-03):3.456559e-03):1.124700e-02,(126:1.994845e-02,((86:1.119997e-02,(((135:4.125296e-03,123:2.609975e-03):1.338629e-03,122:5.599224e-04):1.247347e-04,121:1.956632e-03):4.255348e-03):6.514329e-03,44:8.702270e-03):1.406738e-03):3.081689e-03):4.390131e-03):6.593693e-03):2.821015e-04,(101:4.858902e-03,12:4.198135e-03):1.335322e-02):4.585962e-04):2.756843e-03,((144:4.292494e-02,((143:8.977315e-03,142:8.391560e-03):7.271121e-02,(140:1.547496e-02,(137:2.375343e-02,(141:1.801854e-02,(139:4.845625e-03,138:7.509111e-03):5.295656e-03):2.358940e-03):1.229887e-02):2.599447e-02):4.443259e-02):7.088933e-03,134:5.769189e-02):6.826836e-03):5.876646e-04):4.031933e-03,(32:3.250200e-02,((117:3.522599e-02,(151:7.473737e-03,110:9.434156e-03):5.396982e-03):7.039427e-03,(27:2.809174e-02,154:2.327384e-02):4.710086e-03):2.332033e-03):3.477086e-03):1.630971e-03,((((127:5.961962e-03,57:2.631306e-03):6.478147e-04,((96:1.409200e-03,115:2.740476e-03):7.137445e-03,133:7.424993e-03):1.159072e-03):6.523926e-03,(4:5.405740e-03,(((((81:6.815847e-04,68:1.155674e-03):2.735598e-03,69:7.025004e-04):8.998414e-04,80:2.236265e-03):1.839654e-03,(((3:4.236887e-03,79:1.677530e-03):3.770879e-04,78:1.062032e-03):2.312128e-03,((77:1.334890e-03,(66:2.301659e-04,((70:8.259407e-05,(75:2.060793e-03,65:3.982049e-03):3.647037e-04):4.418750e-04,(71:1.999872e-03,(72:7.517143e-04,73:6.105537e-04):8.489613e-05):5.596686e-04):9.888103e-04):1.665829e-03):7.810491e-04,(64:1.400547e-03,76:2.738529e-03):7.529917e-04):1.655366e-03):3.548366e-03):4.212272e-04,(67:1.216874e-03,74:1.827134e-03):2.430697e-03):1.433684e-03):2.358579e-03):1.337100e-02,((128:1.130754e-02,129:1.857543e-02):2.664069e-02,10:2.449606e-02):1.431688e-02):1.932062e-03):3.746715e-03):1.785518e-03,((83:4.168728e-02,119:4.097966e-02):7.403229e-03,(146:1.888170e-02,147:1.810523e-02):1.032872e-02):2.647861e-02):2.939351e-02):4.262485e-03,94:2.756089e-04,1:6.820178e-04);']
         return trees
 
     def return_nexus_filepath(self, index: int) -> str:
@@ -1356,147 +886,79 @@ class TreeDataset(Dataset):
                 f"Dataset Warning: No trees found in {meta['tree_paths']}. Skipping/Replacing with index 0."
             )
             return self.__getitem__(0, preset_subtree_size)
-        forced_bank_selection = None
-        if (
-            self.overfit_fixed_pair
-            and self.overfit_fixed_pair_reference_tree_from_target_bank
-            and self.overfit_fixed_pair_target_tree_bank_items
-        ):
-            forced_bank_selection = self._sample_overfit_fixed_pair_bank_selection(
-                allow_oracle_prefix=(
-                    not self.validation
-                    and self.overfit_oracle_prefix_start_prob > 0.0
-                    and random.random() < self.overfit_oracle_prefix_start_prob
-                )
-            )
+        real_tree_newick = random.sample(trees, 1)[0]
 
-        if (
-            forced_bank_selection is not None
-            and forced_bank_selection.get("selected_original_labels")
-        ):
-            real_tree_newick = str(
-                forced_bank_selection["forced_target_tree_newick"]
-            ).strip()
-            if not real_tree_newick.endswith(";"):
-                real_tree_newick += ";"
-            chosen_original_labels = [
-                str(label)
-                for label in forced_bank_selection["selected_original_labels"]
-            ]
-            current_size = len(chosen_original_labels)
-            self.chosen_tree = (index, current_size, 1)
-            real_tree_original_label_newick = real_tree_newick
-            new_seqs = {}
-            original_names_map = {}
-            seq_ordering_map = {}
-            for i, original_node_name in enumerate(chosen_original_labels):
-                taxon_name = translate_map.get(original_node_name, original_node_name)
-                new_idx_str = str(i)
-                new_seqs[new_idx_str] = seqs.get(taxon_name, "")
-                original_names_map[new_idx_str] = taxon_name
-                seq_ordering_map[original_node_name] = new_idx_str
+        t = EteTree(real_tree_newick, format=1)
+        leaves = t.get_leaves()
 
-            def _remap_random_tree_to_dataset_indexing(random_tree_newick: str) -> str:
-                tree_str = str(random_tree_newick).strip()
-                return tree_str if tree_str.endswith(";") else f"{tree_str};"
+        # Pruning logic for adaptive batching
 
-            sample_source_tree = real_tree_newick
-        else:
-            #######VERY IMPORTANT HERE FOR DEBUG PURPOSES WE WILL ALWAYS SAMPLE THE FIRST TREE########
-            real_tree_newick = random.sample(trees, 1)[0]
-            # real_tree_newick = trees[0]
-            #########################################################################################
-
-            t = EteTree(real_tree_newick, format=1)
+        if preset_subtree_size is not None and len(leaves) > preset_subtree_size:
+            kept_leaves = random.sample(leaves, preset_subtree_size)
+            t.prune(kept_leaves, preserve_branch_length=True)
+            # real_tree_newick = t.write(format=1) # Don't write yet, wait for re-indexing
+            # Update leaves for size tracking
             leaves = t.get_leaves()
 
-            # Pruning logic for adaptive batching
+        real_tree_original_label_newick = t.write(format=1)
 
-            if preset_subtree_size is not None and len(leaves) > preset_subtree_size:
-                kept_leaves = random.sample(leaves, preset_subtree_size)
-                t.prune(kept_leaves, preserve_branch_length=True)
-                # real_tree_newick = t.write(format=1) # Don't write yet, wait for re-indexing
-                # Update leaves for size tracking
-                leaves = t.get_leaves()
+        current_size = len(leaves)
+        self.chosen_tree = (index, current_size, 1)  # (index, size, num_subtrees)
 
-            real_tree_original_label_newick = t.write(format=1)
+        # Normalize tree indices to 0..N-1 and subset sequences
+        # Sort leaves for deterministic indexing
+        leaves.sort(key=lambda x: _numeric_name_sort_key(x.name))
 
-            current_size = len(leaves)
-            self.chosen_tree = (index, current_size, 1)  # (index, size, num_subtrees)
+        new_seqs = {}
+        original_names_map = {}
+        seq_ordering_map = {}
 
-            # Normalize tree indices to 0..N-1 and subset sequences
-            # Sort leaves for deterministic indexing
-            leaves.sort(key=lambda x: _numeric_name_sort_key(x.name))
+        for i, leaf in enumerate(leaves):
+            original_node_name = leaf.name
+            # Resolve taxon name: check translate map, else use node name
+            taxon_name = translate_map.get(original_node_name, original_node_name)
 
-            new_seqs = {}
-            original_names_map = {}
-            seq_ordering_map = {}
+            # Map new index (0..N-1) to sequence
+            new_idx_str = str(i)
+            # Store sequences using the new index as key
+            new_seqs[new_idx_str] = seqs.get(taxon_name, "")
 
-            for i, leaf in enumerate(leaves):
-                original_node_name = leaf.name
-                # Resolve taxon name: check translate map, else use node name
-                taxon_name = translate_map.get(original_node_name, original_node_name)
+            # Rename leaf in the tree
+            leaf.name = new_idx_str
 
-                # Map new index (0..N-1) to sequence
-                new_idx_str = str(i)
-                # Store sequences using the new index as key
-                new_seqs[new_idx_str] = seqs.get(taxon_name, "")
+            # Record mapping if needed
+            original_names_map[new_idx_str] = taxon_name
 
-                # Rename leaf in the tree
-                leaf.name = new_idx_str
+            seq_ordering_map[original_node_name] = new_idx_str
 
-                # Record mapping if needed
-                original_names_map[new_idx_str] = taxon_name
+        # Serialize the normalized tree
+        real_tree_newick = t.write(format=1)
 
-                seq_ordering_map[original_node_name] = new_idx_str
+        # Re-parse purely to ensure we are passing consistent objects
+        # (Though prune modifies in-place, let's keep it safe)
+        t_pruned = EteTree(real_tree_newick, format=1)
 
-            # Serialize the normalized tree
-            real_tree_newick = t.write(format=1)
+        def _remap_random_tree_to_dataset_indexing(random_tree_newick: str) -> str:
+            t_random = EteTree(random_tree_newick, format=1)
+            dataset_leaf_names = set(new_seqs.keys())
 
-            # Re-parse purely to ensure we are passing consistent objects
-            # (Though prune modifies in-place, let's keep it safe)
-            t_pruned = EteTree(real_tree_newick, format=1)
-
-            def _remap_random_tree_to_dataset_indexing(random_tree_newick: str) -> str:
-                t_random = EteTree(random_tree_newick, format=1)
-                dataset_leaf_names = set(new_seqs.keys())
-
-                # Now remap the random tree to make the indices match up with the real tree.
-                if self.sanity_check:
-                    for leaf in t_random.get_leaves():
-                        name = leaf.name
-                        if name in dataset_leaf_names:
-                            continue
-                        if name in seq_ordering_map:
-                            leaf.name = seq_ordering_map[name]
-                        else:
-                            raise Exception(
-                                "Leaf name in random tree not found in original names map!"
-                            )
+            for leaf in t_random.get_leaves():
+                raw_name = leaf.name
+                if raw_name in dataset_leaf_names:
+                    continue
+                try:
+                    name = str(int(raw_name))
+                except ValueError:
+                    name = raw_name
+                if name in seq_ordering_map:
+                    leaf.name = seq_ordering_map[name]
                 else:
-                    for leaf in t_random.get_leaves():
-                        raw_name = leaf.name
-                        if raw_name in dataset_leaf_names:
-                            continue
-                        try:
-                            name = str(int(raw_name))
-                        except ValueError:
-                            name = raw_name
-                        if name in seq_ordering_map:
-                            leaf.name = seq_ordering_map[name]
-                        else:
-                            raise Exception(
-                                "Leaf name in random tree not found in original names map!"
-                            )
-                return t_random.write(format=1)
+                    raise Exception(
+                        "Leaf name in random tree not found in original names map!"
+                    )
+            return t_random.write(format=1)
 
-            sample_source_tree = t_pruned
-            if self.overfit_start_boundary_prefix_k >= 0 and (
-                self.sanity_check or self.random_sanity_check
-            ):
-                # Keep start/target prefix resolution in the original leaf-name space,
-                # then remap both together into dataset indexing.
-                sample_source_tree = real_tree_original_label_newick
+        sample_source_tree = t_pruned
 
         def _build_pair(
             forced_start_tree_newick: Optional[str] = None,
@@ -1547,19 +1009,11 @@ class TreeDataset(Dataset):
             )
             cache_key = None
             if chosen_start_tree_newick is not None:
-                cache_key = (
-                    random_tree,
-                    target_tree_newick,
-                    int(self.overfit_boundary_prefix_k),
-                    int(self.overfit_start_boundary_prefix_k),
-                    int(self.overfit_event_prefix_count),
-                    bool(self.overfit_split_multi_subset_events),
-                )
+                cache_key = (random_tree, target_tree_newick)
                 cached_pair = self._cached_overfit_bank_pairs_by_key.get(cache_key)
                 if cached_pair is not None:
                     return dict(cached_pair)
 
-            # Both trees now use "0".."N-1" names, so bhv utils will work happily
             effective_target_tree = self.resolve_training_target_tree(
                 random_tree,
                 target_tree_newick,
@@ -1573,12 +1027,11 @@ class TreeDataset(Dataset):
             final_labels = return_sampled_tree_boundary_decisions(
                 random_tree,
                 effective_target_tree,
-                split_multi_label_events=self.overfit_split_multi_subset_events,
+                split_multi_label_events=False,
                 legacy_training_semantics=False,
             )
             allow_velocity_only_pair = bool(boundary_paths) and not final_labels
 
-            # If final_labels is empty, resample random tree until we get valid labels
             while not final_labels and not allow_velocity_only_pair:
                 if chosen_start_tree_newick is not None:
                     raise ValueError(
@@ -1610,7 +1063,7 @@ class TreeDataset(Dataset):
                 final_labels = return_sampled_tree_boundary_decisions(
                     random_tree,
                     effective_target_tree,
-                    split_multi_label_events=self.overfit_split_multi_subset_events,
+                    split_multi_label_events=False,
                     legacy_training_semantics=False,
                 )
                 allow_velocity_only_pair = bool(boundary_paths) and not final_labels
@@ -1629,51 +1082,17 @@ class TreeDataset(Dataset):
         if self.overfit_fixed_pair:
             pair = None
 
-            if forced_bank_selection is not None:
-                pair = _build_pair(
-                    forced_start_tree_newick=forced_bank_selection.get(
-                        "forced_start_tree_newick"
-                    ),
-                    forced_target_tree_newick=forced_bank_selection.get(
-                        "forced_target_tree_newick"
-                    ),
-                )
-                pair["bank_group_key"] = forced_bank_selection.get("bank_group_key")
-                if "oracle_prefix_start_tree" in forced_bank_selection:
-                    pair["oracle_prefix_start_tree"] = forced_bank_selection[
-                        "oracle_prefix_start_tree"
-                    ]
-                    pair["oracle_prefix_base_start_tree"] = forced_bank_selection[
-                        "oracle_prefix_base_start_tree"
-                    ]
-                    pair["oracle_prefix_target_tree"] = forced_bank_selection[
-                        "oracle_prefix_target_tree"
-                    ]
-
             if pair is None and len(self.overfit_fixed_pair_target_tree_newick_bank) > 1:
-                selection_cache_key = None
-                selection = None
-                if (
-                    self.overfit_fixed_pair_cache_virtual_index_selection
-                    and self.overfit_virtual_epoch_size is not None
-                ):
-                    selection_cache_key = int(requested_index)
-                    cached_selection = (
-                        self._cached_overfit_bank_selection_by_virtual_index.get(
-                            selection_cache_key
-                        )
+                selection_cache_key = int(requested_index)
+                cached_selection = (
+                    self._cached_overfit_bank_selection_by_virtual_index.get(
+                        selection_cache_key
                     )
-                    if cached_selection is not None:
-                        selection = dict(cached_selection)
+                )
+                selection = dict(cached_selection) if cached_selection is not None else None
 
                 if selection is None:
-                    selection = self._sample_overfit_fixed_pair_bank_selection(
-                        allow_oracle_prefix=(
-                            not self.validation
-                            and self.overfit_oracle_prefix_start_prob > 0.0
-                            and random.random() < self.overfit_oracle_prefix_start_prob
-                        )
-                    )
+                    selection = self._sample_overfit_fixed_pair_bank_selection()
                     if selection is not None and selection_cache_key is not None:
                         self._cached_overfit_bank_selection_by_virtual_index[
                             selection_cache_key
@@ -1689,16 +1108,6 @@ class TreeDataset(Dataset):
                         ),
                     )
                     pair["bank_group_key"] = selection.get("bank_group_key")
-                    if "oracle_prefix_start_tree" in selection:
-                        pair["oracle_prefix_start_tree"] = selection[
-                            "oracle_prefix_start_tree"
-                        ]
-                        pair["oracle_prefix_base_start_tree"] = selection[
-                            "oracle_prefix_base_start_tree"
-                        ]
-                        pair["oracle_prefix_target_tree"] = selection[
-                            "oracle_prefix_target_tree"
-                        ]
             elif pair is None and len(self.overfit_fixed_pair_start_tree_newick_bank) > 1:
                 pair_bank = self._cached_overfit_pair_banks.get(index)
                 if pair_bank is None:
@@ -1767,22 +1176,13 @@ class TreeDataset(Dataset):
             }
             if "bank_group_key" in pair:
                 sample["bank_group_key"] = pair["bank_group_key"]
-            if "oracle_prefix_start_tree" in pair:
-                sample["oracle_prefix_start_tree"] = pair["oracle_prefix_start_tree"]
-                sample["oracle_prefix_base_start_tree"] = pair[
-                    "oracle_prefix_base_start_tree"
-                ]
-                sample["oracle_prefix_target_tree"] = pair["oracle_prefix_target_tree"]
-            if self.overfit_full_path_control_mode:
-                (
-                    sample["full_path_velocity_samples"],
-                    sample["full_path_autoregressive_samples"],
-                    sample["full_path_terminal_samples"],
-                ) = self._build_full_path_control_samples(pair)
-                sample["_full_path_control_mode"] = True
+            (
+                sample["full_path_velocity_samples"],
+                sample["full_path_autoregressive_samples"],
+            ) = self._build_full_path_control_samples(pair)
             return sample
 
-        horizon = min(self.overfit_event_horizon, len(final_labels))
+        horizon = 1
         max_start_index = max(0, len(final_labels) - horizon)
         random_index = random.randint(0, max_start_index)
 
@@ -1793,110 +1193,15 @@ class TreeDataset(Dataset):
                 if len(final_labels) <= 1
                 else event_index / float(len(final_labels) - 1)
             )
+            velocity_source_tree = random_tree
             velocity_next_boundary_tree = None
-            if self.overfit_velocity_explicit_boundary_end_states:
-                explicit_velocity_trees = [random_tree]
-                explicit_velocity_trees.extend(
-                    path["end_newick"] for path in boundary_paths[:-1]
-                )
-                if self.overfit_velocity_fixed_timepoints:
-                    explicit_velocity_timepoints = list(
-                        self.overfit_velocity_fixed_timepoints
-                    )
-                    if len(explicit_velocity_timepoints) == 1:
-                        explicit_velocity_timepoints = explicit_velocity_timepoints * len(
-                            explicit_velocity_trees
-                        )
-                else:
-                    explicit_velocity_timepoints = [0.0]
-                    explicit_velocity_timepoints.extend(
-                        float(path["global_time"]) for path in boundary_paths[:-1]
-                    )
-                if len(explicit_velocity_trees) != len(explicit_velocity_timepoints):
-                    raise ValueError(
-                        "Explicit boundary-end velocity supervision requires one "
-                        "global timepoint per orthant-start state. "
-                        f"Got {len(explicit_velocity_timepoints)} "
-                        f"timepoints for {len(explicit_velocity_trees)} states."
-                    )
-
-                explicit_velocity_options = list(
-                    zip(
-                        explicit_velocity_trees,
-                        [path["start_newick"] for path in boundary_paths],
-                        explicit_velocity_timepoints,
-                    )
-                )
-                (
-                    velocity_source_tree,
-                    velocity_next_boundary_tree,
-                    model_timepoint,
-                ) = random.choice(
-                    explicit_velocity_options
-                )
-                newick, velocity = return_sampled_tree_orthant_velocity(
-                    velocity_source_tree,
-                    effective_target_tree,
-                    0.0,
-                    legacy_training_semantics=False,
-                )
-                if (
-                    self.overfit_velocity_explicit_boundary_label_scale_mode
-                    == "remaining"
-                ):
-                    scale = 1.0 / max(1.0 - float(model_timepoint), 1e-6)
-                    velocity = {int(k): float(v) * scale for k, v in velocity.items()}
-                timepoint = float(model_timepoint)
-            elif self.overfit_velocity_orthant_start_states:
-                orthant_start_trees = [random_tree]
-                orthant_start_trees.extend(
-                    path["end_newick"] for path in boundary_paths[:-1]
-                )
-                next_boundary_trees = [
-                    path.get("start_newick", path["end_newick"])
-                    for path in boundary_paths
-                ]
-                if all("start_newick" in path for path in boundary_paths):
-                    (
-                        velocity_source_tree,
-                        velocity_next_boundary_tree,
-                    ) = random.choice(
-                        list(zip(orthant_start_trees, next_boundary_trees))
-                    )
-                else:
-                    velocity_source_tree = random.choice(orthant_start_trees)
-                    source_index = orthant_start_trees.index(velocity_source_tree)
-                    velocity_next_boundary_tree = next_boundary_trees[source_index]
-                timepoint = 0.0
-                newick, velocity = return_sampled_tree_orthant_velocity(
-                    velocity_source_tree,
-                    effective_target_tree,
-                    timepoint,
-                    legacy_training_semantics=False,
-                )
-            elif self.overfit_velocity_event_states:
-                velocity_source_tree = chosen_autoregressive_event["newick"]
-                timepoint = 0.0
-                newick, velocity = return_sampled_tree_orthant_velocity(
-                    velocity_source_tree,
-                    effective_target_tree,
-                    timepoint,
-                    legacy_training_semantics=False,
-                )
-            else:
-                velocity_source_tree = random_tree
-                if self.overfit_velocity_fixed_timepoints is not None:
-                    timepoint = float(random.choice(self.overfit_velocity_fixed_timepoints))
-                elif self.overfit_velocity_zero:
-                    timepoint = 0.0
-                else:
-                    timepoint = random.uniform(0, 1)
-                newick, velocity = return_sampled_tree_orthant_velocity(
-                    velocity_source_tree,
-                    effective_target_tree,
-                    timepoint,
-                    legacy_training_semantics=False,
-                )
+            timepoint = random.uniform(0, 1)
+            newick, velocity = return_sampled_tree_orthant_velocity(
+                velocity_source_tree,
+                effective_target_tree,
+                timepoint,
+                legacy_training_semantics=False,
+            )
 
             return {
                 "id": meta["id"],
@@ -1932,22 +1237,11 @@ class TreeDataset(Dataset):
         sample["num_to_name"] = original_names_map
         if "bank_group_key" in pair:
             sample["bank_group_key"] = pair["bank_group_key"]
-        if "oracle_prefix_start_tree" in pair:
-            sample["oracle_prefix_start_tree"] = pair["oracle_prefix_start_tree"]
-            sample["oracle_prefix_base_start_tree"] = pair[
-                "oracle_prefix_base_start_tree"
-            ]
-            sample["oracle_prefix_target_tree"] = pair["oracle_prefix_target_tree"]
         sample["seq_ordering_map"] = seq_ordering_map
-        if len(step_samples) > 1:
-            sample["multi_step_samples"] = step_samples
-        if self.overfit_full_path_control_mode:
-            (
-                sample["full_path_velocity_samples"],
-                sample["full_path_autoregressive_samples"],
-                sample["full_path_terminal_samples"],
-            ) = self._build_full_path_control_samples(pair)
-            sample["_full_path_control_mode"] = True
+        (
+            sample["full_path_velocity_samples"],
+            sample["full_path_autoregressive_samples"],
+        ) = self._build_full_path_control_samples(pair)
 
         return sample
 
@@ -1993,7 +1287,7 @@ class TreeDataset(Dataset):
         final_labels = return_sampled_tree_boundary_decisions(
             random_tree,
             effective_target_tree,
-            split_multi_label_events=self.overfit_split_multi_subset_events,
+            split_multi_label_events=False,
             legacy_training_semantics=False,
         )
         return {
@@ -2066,24 +1360,6 @@ class TreeDataset(Dataset):
         real_tree: Newick string or an ETE Tree.
         Returns: Newick string for a random tree with the same leaf names.
         """
-        if self.overfit_start_boundary_prefix_k >= 0:
-            original_prefix = self.overfit_start_boundary_prefix_k
-            self.overfit_start_boundary_prefix_k = -1
-            try:
-                base_random_tree = self.sample_random_tree(real_tree, subtree_size=subtree_size)
-            finally:
-                self.overfit_start_boundary_prefix_k = original_prefix
-            target_tree_newick = real_tree if isinstance(real_tree, str) else real_tree.write(format=1)
-            return resolve_training_target_tree_for_prefix(
-                base_random_tree,
-                target_tree_newick,
-                original_prefix,
-            )
-
-        ###DEBUG PURPOSES ONLY RETURN THE SAME TREE###
-        # if self.random_tree is not None:
-        #     return self.random_tree
-
         # Parse to ETE
         if isinstance(real_tree, str):
             t = EteTree(real_tree, format=1)
@@ -2105,15 +1381,6 @@ class TreeDataset(Dataset):
 
         # Produce Newick with the same taxa names but random topology/lengths
         random_newick = str(rt)
-        # if self.random_tree is None:
-        #     self.random_tree = random_newick
-        if self.sanity_check:
-            return '((52:6.821929e-03,((((2:4.398080e-02,(((((145:8.657433e-03,91:4.622826e-03):2.222114e-02,((93:1.284674e-02,132:1.985680e-02):8.439914e-03,(((89:1.020633e-02,88:4.611548e-03):8.036501e-03,90:1.429933e-02):1.439583e-02,92:9.908956e-03):1.750425e-03):5.724766e-03):7.037225e-03,87:1.626403e-02):4.747258e-03,(((7:9.739291e-03,5:5.587849e-03):6.613494e-03,(150:1.664500e-02,152:1.724125e-02):1.823357e-02):1.534167e-03,(11:9.469409e-03,(61:5.838223e-04,8:8.467112e-03):4.839481e-03):1.478233e-02):5.742910e-03):1.842902e-02,9:3.628046e-02):4.929418e-03):4.712541e-03,82:4.185746e-02):3.380475e-03,(((((124:1.558528e-02,125:1.705412e-02):5.917463e-03,((102:2.129084e-02,155:9.638513e-03):4.271744e-03,(149:2.436750e-02,(106:2.722806e-02,(130:3.687226e-02,114:4.149299e-02):1.000061e-02):4.023099e-03):2.147868e-03):1.233641e-02):3.719823e-03,((((54:1.214695e-02,19:2.168458e-02):1.996561e-02,((((38:1.057892e-03,((36:7.753757e-04,(46:2.622027e-03,24:1.787443e-03):2.029430e-04):1.481560e-03,(58:1.714262e-04,37:2.458943e-04):2.601513e-03):1.274226e-04):2.389942e-03,56:1.949454e-03):1.489446e-02,(48:1.137571e-02,108:1.964277e-02):1.324782e-03):7.644887e-03,(((39:1.804400e-03,50:3.879771e-04):3.067958e-03,59:3.259752e-03):6.995533e-03,(((6:1.574761e-04,42:2.710545e-05):4.343268e-04,(33:2.616433e-03,41:6.108494e-06):1.184825e-03):1.058122e-02,(((14:6.407019e-05,35:1.283827e-03):3.152093e-03,40:3.500127e-03):1.097830e-02,((((107:1.333270e-03,84:3.209979e-04):2.963766e-03,43:1.910537e-03):1.115617e-03,31:2.194031e-03):1.856883e-03,((47:2.408071e-03,(109:3.641932e-04,49:1.155934e-04):3.415181e-03):2.683443e-03,34:2.281842e-03):4.028540e-03):3.179844e-03):2.139192e-03):1.070869e-03):2.343303e-03):8.589032e-03):3.753159e-03,(((((((136:1.054858e-03,51:1.777442e-04):9.470442e-04,18:8.069737e-04):2.680686e-03,45:1.513089e-03):1.472587e-02,(20:1.791231e-02,((17:6.050183e-03,(((53:2.324964e-03,((100:9.971849e-04,85:1.361781e-03):1.047096e-03,131:4.906427e-03):7.243432e-04):1.869450e-03,62:6.183967e-03):2.898555e-03,(55:6.269062e-03,(13:5.770393e-03,97:4.514650e-03):3.446166e-03):3.282607e-03):1.379633e-03):2.240766e-02,((120:1.168439e-03,25:4.536840e-03):2.917149e-03,(((((63:3.576971e-04,((104:6.782281e-04,105:8.341392e-05):2.542285e-03,(103:2.267958e-03,148:4.839063e-05):2.790594e-04):1.147993e-03):3.031773e-04,29:1.385090e-03):2.901980e-04,(28:1.255159e-03,30:8.757002e-04):1.490579e-03):1.139399e-03,26:2.656695e-03):5.694807e-04,116:5.345046e-03):3.441066e-03):2.961141e-03):5.676048e-03):6.805834e-03):5.342581e-03,(((22:5.519097e-04,21:5.260546e-04):1.063093e-03,23:1.409785e-03):2.054762e-02,99:1.438413e-02):1.228856e-02):1.107615e-03,(((95:9.283287e-03,98:1.739668e-02):6.505733e-03,((16:1.866647e-03,(153:9.563353e-04,15:6.850920e-04):5.016234e-04):6.647760e-03,60:6.967831e-03):1.297224e-02):6.103056e-04,((111:1.652701e-02,(113:1.019696e-02,(118:1.794353e-02,112:9.963961e-03):5.803295e-03):3.456559e-03):1.124700e-02,(126:1.994845e-02,((86:1.119997e-02,(((135:4.125296e-03,123:2.609975e-03):1.338629e-03,122:5.599224e-04):1.247347e-04,121:1.956632e-03):4.255348e-03):6.514329e-03,44:8.702270e-03):1.406738e-03):3.081689e-03):4.390131e-03):6.593693e-03):2.821015e-04,(101:4.858902e-03,12:4.198135e-03):1.335322e-02):4.585962e-04):2.756843e-03,((144:4.292494e-02,((143:8.977315e-03,142:8.391560e-03):7.271121e-02,(140:1.547496e-02,(137:2.375343e-02,(141:1.801854e-02,(139:4.845625e-03,138:7.509111e-03):5.295656e-03):2.358940e-03):1.229887e-02):2.599447e-02):4.443259e-02):7.088933e-03,134:5.769189e-02):6.826836e-03):5.876646e-04):4.031933e-03,(32:3.250200e-02,((117:3.522599e-02,(151:7.473737e-03,110:9.434156e-03):5.396982e-03):7.039427e-03,(27:2.809174e-02,154:2.327384e-02):4.710086e-03):2.332033e-03):3.477086e-03):1.630971e-03,((((127:5.961962e-03,57:2.631306e-03):6.478147e-04,((96:1.409200e-03,115:2.740476e-03):7.137445e-03,133:7.424993e-03):1.159072e-03):6.523926e-03,(4:5.405740e-03,(((((81:6.815847e-04,68:1.155674e-03):2.735598e-03,69:7.025004e-04):8.998414e-04,80:2.236265e-03):1.839654e-03,(((3:4.236887e-03,79:1.677530e-03):3.770879e-04,78:1.062032e-03):2.312128e-03,((77:1.334890e-03,(66:2.301659e-04,((70:8.259407e-05,(75:2.060793e-03,65:3.982049e-03):3.647037e-04):4.418750e-04,(71:1.999872e-03,(72:7.517143e-04,73:6.105537e-04):8.489613e-05):5.596686e-04):9.888103e-04):1.665829e-03):7.810491e-04,(64:1.400547e-03,76:2.738529e-03):7.529917e-04):1.655366e-03):3.548366e-03):4.212272e-04,(67:1.216874e-03,74:1.827134e-03):2.430697e-03):1.433684e-03):2.358579e-03):1.337100e-02,((128:1.130754e-02,129:1.857543e-02):2.664069e-02,10:2.449606e-02):1.431688e-02):1.932062e-03):3.746715e-03):1.785518e-03,((83:4.168728e-02,119:4.097966e-02):7.403229e-03,(146:1.888170e-02,147:1.810523e-02):1.032872e-02):2.647861e-02):2.939351e-02):4.262485e-03,94:2.756089e-04,1:6.820178e-04);'
-        elif self.random_sanity_check:
-            # Return a fixed random tree for sanity checking
-            #return '((((((((((((((((((((114:0.10647175508658419,138:0.16166919943341312):0.16066029529927675,((((116:0.5627405078277302,128:0.9121985789594937):0.24817340926137418,(31:0.7138600194795188,70:0.27733161619156094):0.4220283090253836):0.13590539030009635,45:0.9266067111065456):0.41469258200132686,97:0.9567996962072277):0.3973856401724488):0.12827166224771633,93:0.3554077644937247):0.4654676518823466,82:0.6121947293792284):0.15119162175581607,136:0.5780135217434872):0.681561776165486,((((121:0.8205332597755289,26:0.4976519606747656):0.7351007020839916,50:0.16247867919653797):0.26513923220851,(((((21:0.6708560025782748,61:0.985812264384931):0.1457190042962776,123:0.887037358663522):0.16191218265401736,148:0.41410795146806356):0.2177904539147108,((144:0.9361164985349627,69:0.718171432223074):0.2006864925304015,27:0.6048161782972717):0.6809507099538845):0.5115021153134068,57:0.622530760364837):0.5163652615608707):0.22616406738529704,(((32:0.4183107711531565,56:0.3350936767511892):0.9331874403126009,35:0.7745298500291854):0.3130635990064228,67:0.5679283137099269):0.7002400695719887):0.1545514066693123):0.7553922295970644,83:0.8503526523736518):0.7311503693259214,41:0.24327805868265814):0.15263496280656946,133:0.29593080857275744):0.7621634609101391,(77:0.3935646143716599,9:0.5600565971871284):0.7002036136951567):0.24542377864649756,25:0.9818181584459523):0.8756372817731165,139:0.16116477703818152):0.5985293701820318,113:0.118930834006353):0.6295961029693159,154:0.33801932933841494):0.8941447676266638,(((118:0.3186975181561521,38:0.2614245970763863):0.9173431415967147,20:0.5548681522881885):0.32600912686290473,23:0.13967808561914502):0.6185904847488098):0.3231150522994072,((((((((((((140:0.17378506494538792,142:0.7027533772928463):0.6210271517564896,(((103:0.20068095278880554,22:0.8464132804349973):0.27243106492748864,122:0.1983421290203236):0.58265717851931,84:0.3734874543415184):0.13576749606015798):0.5749064086764286,(109:0.9679266154067097,63:0.9095542596200796):0.645934525734366):0.3167844332025098,((24:0.21773769463153203,59:0.6369141294889702):0.4002008847445794,105:0.758716835360165):0.1708813434622295):0.6106212493200189,19:0.4085922590139328):0.6390501260142061,((((((((102:0.9301906725564473,53:0.7115663065242372):0.6930844745631968,(((12:0.4699920484447643,129:0.1019398405162838):0.778208953617708,126:0.18393649856545236):0.3127415414875745,((78:0.5989712299001143,79:0.27265608369113276):0.6984364907914944,94:0.6974684526744989):0.7274875727749591):0.41886780993059847):0.35062953756809234,((117:0.7510173092928738,66:0.4924517639094751):0.4586193807083052,49:0.6940298644737661):0.5853105382552791):0.5368730492354417,48:0.30063119248522807):0.9581497728881525,1:0.7477126019973318):0.24539413217783806,(((55:0.8893345704180042,73:0.6970487286389898):0.1248404816076723,15:0.3722654286810009):0.5888961660354282,145:0.10838391119582176):0.942160858700341):0.3822443287927564,134:0.15486181432886426):0.14512810353755823,33:0.6038951672294827):0.5397451372260531):0.926644144956132,11:0.9360221437019591):0.24234197891020276,(((((((((104:0.3155070793042529,81:0.25662460888894956):0.3535806443121049,17:0.7681750155828988):0.23990311879749143,18:0.28956668932624874):0.7574547856739193,((131:0.6956841807556707,72:0.6608398689517683):0.416031516174477,51:0.7959939736963249):0.8050253756358585):0.986789241049431,((((((((37:0.47106496931841757,43:0.5236210189773913):0.25934713328834313,150:0.576046623342043):0.985467979226334,((101:0.43652246733203315,137:0.5570456472940767):0.8662082908097093,62:0.20408120562639742):0.826389948938628):0.5332225761739355,127:0.46577265215722485):0.8781853546271939,151:0.7010768833413252):0.9274484177488677,135:0.5291096653980414):0.8575024133552204,(((((141:0.33468912604326956,6:0.41111840051182025):0.8077853603833137,85:0.28916441639437773):0.47054184989639836,4:0.8041478465328685):0.6087042314596806,((10:0.9746992889831029,92:0.7623653013461995):0.6929656704985796,95:0.657334724826138):0.3847328613790544):0.6916358480252702,(2:0.8676215338527076,96:0.1840484800680064):0.7187474159211975):0.27901999158825974):0.5568965937798708,(147:0.21921091332982057,68:0.8258597827300935):0.5552962246438888):0.8260973243174158):0.42668269046284024,((((((((((119:0.184893216842694,52:0.5584651079752336):0.33905306127821844,143:0.38276547651601844):0.18811785538144032,(125:0.11328207084608549,47:0.8841907322767074):0.6869304045986698):0.5865291442902746,76:0.5564102536317422):0.7633339241412703,7:0.946236808357798):0.46635396533734297,107:0.6937757404726307):0.5256756486501344,64:0.27107089705206644):0.14875406850895348,120:0.8774530735326429):0.6881099394392124,65:0.139947880341908):0.24861426307671491,108:0.9521638117344918):0.5794355525765641):0.2131844603683972,(86:0.6459954134317863,91:0.9638488033147325):0.8071829447298221):0.27090808054087345,132:0.5380042704888965):0.7045182636744548,((111:0.9096526761786509,80:0.773321104143001):0.819898326916207,36:0.24625159039039476):0.43607845227636444):0.10292078449155637):0.7498828551789197,((((14:0.6127078691243664,90:0.8143618591954018):0.9474365145061804,13:0.8066164211147094):0.4633979961864497,30:0.9749766385155344):0.4513795818290318,((((153:0.8903142684762329,44:0.2796155470231767):0.9385804354924697,(146:0.5838709636914646,98:0.3113817386740156):0.19322785172639034):0.6590433299437836,(((115:0.15298639018869106,58:0.9851955155947784):0.13443147761793645,89:0.7080645098710899):0.3980348813929664,54:0.8592950469448727):0.6066942810750514):0.18998312403212964,75:0.9100421515873822):0.9338662662034):0.7370568518936087):0.9801860443096008,106:0.8344209280780797):0.7857659791468582,(100:0.6627701742097758,112:0.5063375272520168):0.5569135071438928):0.1957697405179345,5:0.3507427549207035):0.15762330669371044):0.779738676972225,((((29:0.13764597235197207,88:0.49760741515415763):0.13485214689920783,42:0.4442875503372409):0.5972725870704979,((((149:0.4943661157069389,152:0.59914205424071):0.31985597485731826,110:0.4590930699976863):0.35648865209499103,74:0.212162784097931):0.4881676596624882,(71:0.9286937705962361,8:0.4412307494102876):0.9539870373741829):0.48680804159269464):0.4322943860609726,39:0.9320385657173911):0.7416540755372096):0.7208808688896593,((((((40:0.32335051700566064,99:0.37937751786542373):0.7615517849450885,130:0.7269323532401463):0.7029164163593771,87:0.39002430676288435):0.9397792094685887,3:0.42818636379453046):0.9505458451419752,((34:0.9764533203735601,46:0.8384827428744058):0.887241451186982,28:0.13242532425474757):0.7219176613802888):0.23414885693066756,60:0.4927544954835472):0.35672430605222827):0.16784639953686042,(124:0.8703702032215355,16:0.9007414363051383):0.8272200202585324):0.0,0:0.0);'
-            #return '((((((74:0.00158,67:0.00147):0.00219,(((80:0.00175,(69:0.00153,(81:0.00128,68:0.00047):0.00108):0.00021):0.00156,4:0.00497):0.00013,((133:0.00707,((115:0.00142,96:0.00162):0.00389,(127:0.00419,57:0.00234):0.00024):0.00043):0.00610,(((129:0.01483,128:0.01258):0.02349,10:0.02220):0.01067,(((110:0.01986,32:0.03018):0.00085,27:0.02439):0.00161,((84:0.02267,(90:0.05224,65:0.01999):0.06741):0.08712,((((98:0.01559,95:0.01357):0.00483,((((113:0.00996,(118:0.01509,112:0.01146):0.00201):0.00243,111:0.01759):0.00797,(126:0.01728,(((153:0.03625,135:0.03207):0.02023,((123:0.00285,(122:0.00146,121:0.00028):0.00194):0.00538,86:0.01007):0.00596):0.00314,44:0.01368):0.00247):0.00218):0.00103,(60:0.00611,(16:0.00049,15:0.00169):0.00607):0.01037):0.00035):0.00489,(((125:0.01786,124:0.01565):0.00892,(((130:0.03630,114:0.03724):0.00223,106:0.02954):0.00318,102:0.02412):0.00628):0.00240,((54:0.01483,19:0.02781):0.01776,((((45:0.00394,(136:0.00477,(51:0.00003,18:0.00041):0.00002):0.00346):0.01614,(20:0.01759,((((116:0.00391,(((105:0.00001,104:0.00042):0.00068,103:0.00237):0.00066,((63:0.00081,29:0.00050):0.00051,(30:0.00104,28:0.00070):0.00036):0.00043):0.00088):0.00037,26:0.00309):0.00137,(120:0.00521,25:0.00175):0.00206):0.00460,(17:0.00870,((62:0.00415,((131:0.00377,(100:0.00199,85:0.00976):0.00058):0.00016,53:0.00071):0.00238):0.00213,(55:0.00505,(97:0.00254,13:0.00443):0.00431):0.00283):0.00208):0.01527):0.00236):0.00180):0.00285,((99:0.01663,(23:0.00062,(22:0.00022,21:0.00022):0.00068):0.01808):0.00968,(101:0.00441,12:0.00560):0.01501):0.00020):0.00037,((((108:0.01911,48:0.01179):0.00251,(46:0.00155,((58:0.00043,37:0.00001):0.00143,((56:0.00191,38:0.00157):0.00046,(36:0.00140,24:0.00121):0.00020):0.00042):0.00063):0.00811):0.00699,((59:0.00365,(50:0.00067,39:0.00107):0.00288):0.00897,(((((109:0.00043,49:0.00000):0.00067,47:0.00107):0.00202,34:0.00102):0.00266,((107:0.00304,43:0.00088):0.00136,31:0.00212):0.00103):0.00509,(40:0.00414,(35:0.00000,14:0.00000):0.00326):0.00796):0.00133):0.00212):0.00123,((41:0.00009,33:0.00165):0.01313,(148:0.01747,(42:0.00000,6:0.00000):0.02431):0.02581):0.00435):0.00457):0.00092):0.00074):0.00062):0.00244,((52:0.00623,(94:0.00106,1:0.03289):0.00421):0.02268,(((((143:0.01269,142:0.00907):0.06123,(140:0.02122,((141:0.01612,(139:0.00865,138:0.00789):0.00673):0.00139,137:0.02363):0.00457):0.02164):0.02569,(134:0.10397,(144:0.07853,(151:0.09246,(154:0.27905,117:0.06125):0.07269):0.04451):0.01766):0.00510):0.00403,((147:0.01720,146:0.01718):0.01042,(119:0.03662,83:0.02953):0.00351):0.01413):0.00066,(82:0.04391,((9:0.03393,((((145:0.01759,91:0.00547):0.02071,((132:0.01806,93:0.01632):0.00670,(92:0.01241,(89:0.00723,88:0.00408):0.01522):0.00272):0.00104):0.00989,87:0.02134):0.00196,((11:0.00845,(61:0.00226,8:0.00427):0.00417):0.01284,(150:0.03854,(7:0.00957,5:0.00871):0.00715):0.00266):0.00414):0.01177):0.00574,(((155:0.32836,152:0.04457):0.02833,149:0.02867):0.07311,2:0.09508):0.02500):0.00275):0.00127):0.00272):0.00096):0.00172):0.00170):0.00016):0.01078):0.00373):0.00032):0.00194,((79:0.00087,78:0.00044):0.00036,3:0.00225):0.00104):0.00028,(77:0.00227,(76:0.00200,64:0.00148):0.00034):0.00008):0.00025,(70:0.00002,66:0.00085):0.00013):0.00009,(73:0.00075,(72:0.00087,71:0.00044):0.00012):0.00022,75:0.00196):0.00000;'
-            return '((((((74:0.00158,67:0.00147):0.00219,(((80:0.00175,(69:0.00153,(81:0.00128,68:0.00047):0.00108):0.00021):0.00156,4:0.00497):0.00013,((133:0.00707,((115:0.00142,96:0.00162):0.00389,(127:0.00419,57:0.00234):0.00024):0.00043):0.00610,(((129:0.01483,128:0.01258):0.02349,10:0.02220):0.01067,(((110:0.01986,32:0.03018):0.00085,27:0.02439):0.00161,((84:0.02267,(90:0.05224,65:0.01999):0.06741):0.08712,((((98:0.01559,95:0.01357):0.00483,((((113:0.00996,(118:0.01509,112:0.01146):0.00201):0.00243,111:0.01759):0.00797,(126:0.01728,(((153:0.03625,135:0.03207):0.02023,((123:0.00285,(122:0.00146,121:0.00028):0.00194):0.00538,86:0.01007):0.00596):0.00314,44:0.01368):0.00247):0.00218):0.00103,(60:0.00611,(16:0.00049,15:0.00169):0.00607):0.01037):0.00035):0.00489,(((125:0.01786,124:0.01565):0.00892,(((130:0.03630,114:0.03724):0.00223,106:0.02954):0.00318,102:0.02412):0.00628):0.00240,((54:0.01483,19:0.02781):0.01776,((((45:0.00394,(136:0.00477,(51:0.00003,18:0.00041):0.00002):0.00346):0.01614,(20:0.01759,((((116:0.00391,(((105:0.00001,104:0.00042):0.00068,103:0.00237):0.00066,((63:0.00081,29:0.00050):0.00051,(30:0.00104,28:0.00070):0.00036):0.00043):0.00088):0.00037,26:0.00309):0.00137,(120:0.00521,25:0.00175):0.00206):0.00460,(17:0.00870,((62:0.00415,((131:0.00377,(100:0.00199,85:0.00976):0.00058):0.00016,53:0.00071):0.00238):0.00213,(55:0.00505,(97:0.00254,13:0.00443):0.00431):0.00283):0.00208):0.01527):0.00236):0.00180):0.00285,((99:0.01663,(23:0.00062,(22:0.00022,21:0.00022):0.00068):0.01808):0.00968,(101:0.00441,12:0.00560):0.01501):0.00020):0.00037,((((108:0.01911,48:0.01179):0.00251,(46:0.00155,((58:0.00043,37:0.00001):0.00143,((56:0.00191,38:0.00157):0.00046,(36:0.00140,24:0.00121):0.00020):0.00042):0.00063):0.00811):0.00699,((59:0.00365,(50:0.00067,39:0.00107):0.00288):0.00897,(((((109:0.00043,49:0.00000):0.00067,47:0.00107):0.00202,34:0.00102):0.00266,((107:0.00304,43:0.00088):0.00136,31:0.00212):0.00103):0.00509,(40:0.00414,(35:0.00000,14:0.00000):0.00326):0.00796):0.00133):0.00212):0.00123,((41:0.00009,33:0.00165):0.01313,(148:0.01747,(42:0.00000,6:0.00000):0.02431):0.02581):0.00435):0.00457):0.00092):0.00074):0.00062):0.00244,((52:0.00623,(94:0.00106,1:0.03289):0.00421):0.02268,(((((143:0.01269,142:0.00907):0.06123,(140:0.02122,((141:0.01612,(139:0.00865,138:0.00789):0.00673):0.00139,137:0.02363):0.00457):0.02164):0.02569,(134:0.10397,(144:0.07853,(151:0.09246,(154:0.27905,117:0.06125):0.07269):0.04451):0.01766):0.00510):0.00403,((147:0.01720,146:0.01718):0.01042,(119:0.03662,83:0.02953):0.00351):0.01413):0.00066,(82:0.04391,((9:0.03393,((((145:0.01759,91:0.00547):0.02071,((132:0.01806,93:0.01632):0.00670,(92:0.01241,(89:0.00723,88:0.00408):0.01522):0.00272):0.00104):0.00989,87:0.02134):0.00196,((11:0.00845,(61:0.00226,8:0.00427):0.00417):0.01284,(150:0.03854,(7:0.00957,5:0.00871):0.00715):0.00266):0.00414):0.01177):0.00574,(((155:0.32836,152:0.04457):0.02833,149:0.02867):0.07311,2:0.09508):0.02500):0.00275):0.00127):0.00272):0.00096):0.00172):0.00170):0.00016):0.01078):0.00373):0.00032):0.00194,((79:0.00087,78:0.00044):0.00036,3:0.00225):0.00104):0.00028,(77:0.00227,(76:0.00200,64:0.00148):0.00034):0.00008):0.00025,(70:0.00002,66:0.00085):0.00013):0.00009,(73:0.00075,(72:0.00087,71:0.00044):0.00012):0.00022,75:0.00196):0.00000;'
         return random_newick
 
     def extract_newick_from_line(self, line: str) -> str:
@@ -2211,8 +1478,6 @@ class TreeDataset(Dataset):
             tuple(str(path) for path in tree_files),
             float(burn_in_fraction),
             int(self.trprobs_sample_count_per_file),
-            bool(self.sanity_check),
-            bool(self.random_sanity_check),
         )
         cached = self._cached_posterior_trees_by_key.get(cache_key)
         if cached is not None:
@@ -2246,10 +1511,7 @@ class TreeDataset(Dataset):
                 kept = file_trees[burn:]
 
             all_trees.extend(kept)
-        if self.sanity_check or self.random_sanity_check:
-            fixed = ['((52:6.821929e-03,((((2:4.398080e-02,(((((145:8.657433e-03,91:4.622826e-03):2.222114e-02,((93:1.284674e-02,132:1.985680e-02):8.439914e-03,(((89:1.020633e-02,88:4.611548e-03):8.036501e-03,90:1.429933e-02):1.439583e-02,92:9.908956e-03):1.750425e-03):5.724766e-03):7.037225e-03,87:1.626403e-02):4.747258e-03,(((7:9.739291e-03,5:5.587849e-03):6.613494e-03,(150:1.664500e-02,152:1.724125e-02):1.823357e-02):1.534167e-03,(11:9.469409e-03,(61:5.838223e-04,8:8.467112e-03):4.839481e-03):1.478233e-02):5.742910e-03):1.842902e-02,9:3.628046e-02):4.929418e-03):4.712541e-03,82:4.185746e-02):3.380475e-03,(((((124:1.558528e-02,125:1.705412e-02):5.917463e-03,((102:2.129084e-02,155:9.638513e-03):4.271744e-03,(149:2.436750e-02,(106:2.722806e-02,(130:3.687226e-02,114:4.149299e-02):1.000061e-02):4.023099e-03):2.147868e-03):1.233641e-02):3.719823e-03,((((54:1.214695e-02,19:2.168458e-02):1.996561e-02,((((38:1.057892e-03,((36:7.753757e-04,(46:2.622027e-03,24:1.787443e-03):2.029430e-04):1.481560e-03,(58:1.714262e-04,37:2.458943e-04):2.601513e-03):1.274226e-04):2.389942e-03,56:1.949454e-03):1.489446e-02,(48:1.137571e-02,108:1.964277e-02):1.324782e-03):7.644887e-03,(((39:1.804400e-03,50:3.879771e-04):3.067958e-03,59:3.259752e-03):6.995533e-03,(((6:1.574761e-04,42:2.710545e-05):4.343268e-04,(33:2.616433e-03,41:6.108494e-06):1.184825e-03):1.058122e-02,(((14:6.407019e-05,35:1.283827e-03):3.152093e-03,40:3.500127e-03):1.097830e-02,((((107:1.333270e-03,84:3.209979e-04):2.963766e-03,43:1.910537e-03):1.115617e-03,31:2.194031e-03):1.856883e-03,((47:2.408071e-03,(109:3.641932e-04,49:1.155934e-04):3.415181e-03):2.683443e-03,34:2.281842e-03):4.028540e-03):3.179844e-03):2.139192e-03):1.070869e-03):2.343303e-03):8.589032e-03):3.753159e-03,(((((((136:1.054858e-03,45:1.777442e-04):9.470442e-04,18:8.069737e-04):2.680686e-03,51:1.513089e-03):1.472587e-02,(20:1.791231e-02,((17:6.050183e-03,(((53:2.324964e-03,((100:9.971849e-04,85:1.361781e-03):1.047096e-03,131:4.906427e-03):7.243432e-04):1.869450e-03,62:6.183967e-03):2.898555e-03,(55:6.269062e-03,(13:5.770393e-03,97:4.514650e-03):3.446166e-03):3.282607e-03):1.379633e-03):2.240766e-02,((120:1.168439e-03,25:4.536840e-03):2.917149e-03,(((((63:3.576971e-04,((104:6.782281e-04,105:8.341392e-05):2.542285e-03,(103:2.267958e-03,148:4.839063e-05):2.790594e-04):1.147993e-03):3.031773e-04,29:1.385090e-03):2.901980e-04,(28:1.255159e-03,30:8.757002e-04):1.490579e-03):1.139399e-03,26:2.656695e-03):5.694807e-04,116:5.345046e-03):3.441066e-03):2.961141e-03):5.676048e-03):6.805834e-03):5.342581e-03,(((22:5.519097e-04,21:5.260546e-04):1.063093e-03,23:1.409785e-03):2.054762e-02,99:1.438413e-02):1.228856e-02):1.107615e-03,(((95:9.283287e-03,98:1.739668e-02):6.505733e-03,((16:1.866647e-03,(153:9.563353e-04,15:6.850920e-04):5.016234e-04):6.647760e-03,60:6.967831e-03):1.297224e-02):6.103056e-04,((111:1.652701e-02,(113:1.019696e-02,(118:1.794353e-02,112:9.963961e-03):5.803295e-03):3.456559e-03):1.124700e-02,(126:1.994845e-02,((86:1.119997e-02,(((135:4.125296e-03,123:2.609975e-03):1.338629e-03,122:5.599224e-04):1.247347e-04,121:1.956632e-03):4.255348e-03):6.514329e-03,44:8.702270e-03):1.406738e-03):3.081689e-03):4.390131e-03):6.593693e-03):2.821015e-04,(101:4.858902e-03,12:4.198135e-03):1.335322e-02):4.585962e-04):2.756843e-03,((144:4.292494e-02,((143:8.977315e-03,142:8.391560e-03):7.271121e-02,(140:1.547496e-02,(137:2.375343e-02,(141:1.801854e-02,(139:4.845625e-03,138:7.509111e-03):5.295656e-03):2.358940e-03):1.229887e-02):2.599447e-02):4.443259e-02):7.088933e-03,134:5.769189e-02):6.826836e-03):5.876646e-04):4.031933e-03,(32:3.250200e-02,((117:3.522599e-02,(151:7.473737e-03,110:9.434156e-03):5.396982e-03):7.039427e-03,(27:2.809174e-02,154:2.327384e-02):4.710086e-03):2.332033e-03):3.477086e-03):1.630971e-03,((((127:5.961962e-03,57:2.631306e-03):6.478147e-04,((96:1.409200e-03,115:2.740476e-03):7.137445e-03,133:7.424993e-03):1.159072e-03):6.523926e-03,(4:5.405740e-03,(((((81:6.815847e-04,68:1.155674e-03):2.735598e-03,69:7.025004e-04):8.998414e-04,80:2.236265e-03):1.839654e-03,(((3:4.236887e-03,79:1.677530e-03):3.770879e-04,78:1.062032e-03):2.312128e-03,((77:1.334890e-03,(66:2.301659e-04,((70:8.259407e-05,(75:2.060793e-03,65:3.982049e-03):3.647037e-04):4.418750e-04,(71:1.999872e-03,(72:7.517143e-04,73:6.105537e-04):8.489613e-05):5.596686e-04):9.888103e-04):1.665829e-03):7.810491e-04,(64:1.400547e-03,76:2.738529e-03):7.529917e-04):1.655366e-03):3.548366e-03):4.212272e-04,(67:1.216874e-03,74:1.827134e-03):2.430697e-03):1.433684e-03):2.358579e-03):1.337100e-02,((128:1.130754e-02,129:1.857543e-02):2.664069e-02,10:2.449606e-02):1.431688e-02):1.932062e-03):3.746715e-03):1.785518e-03,((83:4.168728e-02,119:4.097966e-02):7.403229e-03,(146:1.888170e-02,147:1.810523e-02):1.032872e-02):2.647861e-02):2.939351e-02):4.262485e-03,94:2.756089e-04,1:6.820178e-04);']
-            self._cached_posterior_trees_by_key[cache_key] = list(fixed)
-            return fixed
+
         self._cached_posterior_trees_by_key[cache_key] = list(all_trees)
         return all_trees
 
@@ -2560,26 +1822,8 @@ class PhylaDataModule(pl.LightningDataModule):
         }
 
         self.dataset_train = TreeDataset(
-            self.nexus_dir, self.mrbayes_dir, filter_ids=self.train_ids, sanity_check=config["data"].get("sanity_check", False), random_sanity_check=config["data"].get("random_sanity_check", False),
-            overfit_velocity_zero=config["data"].get("overfit_velocity_zero", False),
-            overfit_velocity_event_states=config["data"].get("overfit_velocity_event_states", False),
-            overfit_velocity_orthant_start_states=config["data"].get(
-                "overfit_velocity_orthant_start_states", False
-            ),
-            overfit_velocity_explicit_boundary_end_states=config["data"].get(
-                "overfit_velocity_explicit_boundary_end_states", False
-            ),
-            overfit_velocity_fixed_timepoints=config["data"].get(
-                "overfit_velocity_fixed_timepoints"
-            ),
-            overfit_velocity_explicit_boundary_label_scale_mode=config["data"].get(
-                "overfit_velocity_explicit_boundary_label_scale_mode", "local"
-            ),
-            overfit_boundary_prefix_k=config["data"].get("overfit_boundary_prefix_k", -1),
-            overfit_start_boundary_prefix_k=config["data"].get("overfit_start_boundary_prefix_k", -1),
-            overfit_event_prefix_count=config["data"].get("overfit_event_prefix_count", -1),
-            overfit_event_horizon=config["data"].get("overfit_event_horizon", 1),
-            overfit_fixed_pair=config["data"].get("overfit_fixed_pair", False),
+            self.nexus_dir, self.mrbayes_dir, filter_ids=self.train_ids,
+            overfit_fixed_pair=True,
             overfit_fixed_pair_start_tree_newick=config["data"].get(
                 "overfit_fixed_pair_start_tree_newick"
             ),
@@ -2604,84 +1848,17 @@ class PhylaDataModule(pl.LightningDataModule):
             overfit_fixed_pair_target_tree_json_dir=config["data"].get(
                 "overfit_fixed_pair_target_tree_json_dir"
             ),
-            overfit_split_multi_subset_events=config["data"].get(
-                "overfit_split_multi_subset_events", False
-            ),
-            overfit_full_path_control_mode=config["data"].get(
-                "overfit_full_path_control_mode", False
-            ),
             overfit_full_path_control_seed=config["data"].get(
                 "overfit_full_path_control_seed", 42
-            ),
-            overfit_full_path_control_use_discrete_phase_time=config["data"].get(
-                "overfit_full_path_control_use_discrete_phase_time", False
-            ),
-            overfit_full_path_control_terminal_label_mode=config["data"].get(
-                "overfit_full_path_control_terminal_label_mode", "phase_start"
-            ),
-            overfit_full_path_control_terminal_include_ar_states=config["data"].get(
-                "overfit_full_path_control_terminal_include_ar_states", False
-            ),
-            overfit_full_path_control_terminal_include_target_one_split_off=config["data"].get(
-                "overfit_full_path_control_terminal_include_target_one_split_off",
-                False,
-            ),
-            overfit_full_path_control_extra_velocity_samples_json_path=config["data"].get(
-                "overfit_full_path_control_extra_velocity_samples_json_path"
-            ),
-            overfit_oracle_prefix_start_prob=config["data"].get(
-                "overfit_oracle_prefix_start_prob",
-                config["data"].get(
-                    "analysis_oracle_prefix_start_prob",
-                    config.get("trainer", {}).get(
-                        "analysis_oracle_prefix_start_prob", 0.0
-                    ),
-                ),
-            ),
-            overfit_oracle_prefix_max_fraction=config["data"].get(
-                "overfit_oracle_prefix_max_fraction",
-                config["data"].get(
-                    "analysis_oracle_prefix_max_fraction",
-                    config.get("trainer", {}).get(
-                        "analysis_oracle_prefix_max_fraction", 0.5
-                    ),
-                ),
-            ),
-            overfit_fixed_pair_group_by_json_metadata=config["data"].get(
-                "overfit_fixed_pair_group_by_json_metadata", False
-            ),
-            overfit_fixed_pair_reference_tree_from_target_bank=config["data"].get(
-                "overfit_fixed_pair_reference_tree_from_target_bank", False
             ),
             overfit_virtual_epoch_size=config["data"].get(
                 "overfit_virtual_epoch_size"
             ),
-            overfit_fixed_pair_cache_virtual_index_selection=config["data"].get(
-                "overfit_fixed_pair_cache_virtual_index_selection", False
-            ),
             **trprobs_dataset_kwargs,
         )
         self.dataset_val = TreeDataset(
-            self.nexus_dir, self.mrbayes_dir, filter_ids=self.test_ids, validation=True, sanity_check=config["data"].get("sanity_check", False), random_sanity_check=config["data"].get("random_sanity_check", False),
-            overfit_velocity_zero=config["data"].get("overfit_velocity_zero", False),
-            overfit_velocity_event_states=config["data"].get("overfit_velocity_event_states", False),
-            overfit_velocity_orthant_start_states=config["data"].get(
-                "overfit_velocity_orthant_start_states", False
-            ),
-            overfit_velocity_explicit_boundary_end_states=config["data"].get(
-                "overfit_velocity_explicit_boundary_end_states", False
-            ),
-            overfit_velocity_fixed_timepoints=config["data"].get(
-                "overfit_velocity_fixed_timepoints"
-            ),
-            overfit_velocity_explicit_boundary_label_scale_mode=config["data"].get(
-                "overfit_velocity_explicit_boundary_label_scale_mode", "local"
-            ),
-            overfit_boundary_prefix_k=config["data"].get("overfit_boundary_prefix_k", -1),
-            overfit_start_boundary_prefix_k=config["data"].get("overfit_start_boundary_prefix_k", -1),
-            overfit_event_prefix_count=config["data"].get("overfit_event_prefix_count", -1),
-            overfit_event_horizon=config["data"].get("overfit_event_horizon", 1),
-            overfit_fixed_pair=config["data"].get("overfit_fixed_pair", False),
+            self.nexus_dir, self.mrbayes_dir, filter_ids=self.test_ids, validation=True,
+            overfit_fixed_pair=True,
             overfit_fixed_pair_start_tree_newick=config["data"].get(
                 "overfit_fixed_pair_start_tree_newick"
             ),
@@ -2706,57 +1883,10 @@ class PhylaDataModule(pl.LightningDataModule):
             overfit_fixed_pair_target_tree_json_dir=config["data"].get(
                 "overfit_fixed_pair_target_tree_json_dir"
             ),
-            overfit_split_multi_subset_events=config["data"].get(
-                "overfit_split_multi_subset_events", False
-            ),
-            overfit_full_path_control_mode=config["data"].get(
-                "overfit_full_path_control_mode", False
-            ),
             overfit_full_path_control_seed=config["data"].get(
                 "overfit_full_path_control_seed", 42
             ),
-            overfit_full_path_control_use_discrete_phase_time=config["data"].get(
-                "overfit_full_path_control_use_discrete_phase_time", False
-            ),
-            overfit_full_path_control_terminal_label_mode=config["data"].get(
-                "overfit_full_path_control_terminal_label_mode", "phase_start"
-            ),
-            overfit_full_path_control_terminal_include_ar_states=config["data"].get(
-                "overfit_full_path_control_terminal_include_ar_states", False
-            ),
-            overfit_full_path_control_terminal_include_target_one_split_off=config["data"].get(
-                "overfit_full_path_control_terminal_include_target_one_split_off",
-                False,
-            ),
-            overfit_full_path_control_extra_velocity_samples_json_path=config["data"].get(
-                "overfit_full_path_control_extra_velocity_samples_json_path"
-            ),
-            overfit_oracle_prefix_start_prob=config["data"].get(
-                "overfit_oracle_prefix_start_prob",
-                config["data"].get(
-                    "analysis_oracle_prefix_start_prob",
-                    config.get("trainer", {}).get(
-                        "analysis_oracle_prefix_start_prob", 0.0
-                    ),
-                ),
-            ),
-            overfit_oracle_prefix_max_fraction=config["data"].get(
-                "overfit_oracle_prefix_max_fraction",
-                config["data"].get(
-                    "analysis_oracle_prefix_max_fraction",
-                    config.get("trainer", {}).get(
-                        "analysis_oracle_prefix_max_fraction", 0.5
-                    ),
-                ),
-            ),
-            overfit_fixed_pair_group_by_json_metadata=config["data"].get(
-                "overfit_fixed_pair_group_by_json_metadata", False
-            ),
-            overfit_fixed_pair_reference_tree_from_target_bank=config["data"].get(
-                "overfit_fixed_pair_reference_tree_from_target_bank", False
-            ),
             overfit_virtual_epoch_size=None,
-            overfit_fixed_pair_cache_virtual_index_selection=False,
             **trprobs_dataset_kwargs,
         )
         self.tree_tokenizer = TreeFeatureTokenizer(
@@ -2835,10 +1965,24 @@ class PhylaDataModule(pl.LightningDataModule):
 
     def collate_fn(self, batch, preset_subtree_num=None):
         """Custom collate function if needed."""
-        full_path_velocity_samples = []
-        full_path_autoregressive_samples = []
-        full_path_terminal_samples = []
-        full_path_control_mode = False
+        batch = [item for item in batch if item is not None]
+        if not batch:
+            return None
+
+        if "posterior_trees" in batch[0]:
+            ids = [item["id"] for item in batch]
+            posterior_trees = [item["posterior_trees"] for item in batch]
+            mappings = [item["num_to_name"] for item in batch]
+            phyla_embeddings = None
+
+            return {
+                "ids": ids,
+                "posterior_trees": posterior_trees,
+                "phyla_embeddings": phyla_embeddings,
+                "mappings": mappings,
+                "nexus_filepaths": [item["nexus_path"] for item in batch],
+                "tree_paths": [item["tree_paths"] for item in batch],
+            }
 
         def _attach_full_path_sample_context(item, samples):
             enriched = []
@@ -2862,55 +2006,28 @@ class PhylaDataModule(pl.LightningDataModule):
                 enriched.append(sample_with_context)
             return enriched
 
+        full_path_velocity_samples = []
+        full_path_autoregressive_samples = []
         for item in batch:
-            if item is None:
-                continue
-            if item.get("_full_path_control_mode", False):
-                full_path_control_mode = True
-                full_path_velocity_samples.extend(
-                    _attach_full_path_sample_context(
-                        item,
-                        item.get("full_path_velocity_samples"),
-                    )
+            if (
+                item.get("full_path_velocity_samples") is None
+                or item.get("full_path_autoregressive_samples") is None
+            ):
+                raise RuntimeError(
+                    "Production DS training requires full-path velocity and autoregressive samples."
                 )
-                full_path_autoregressive_samples.extend(
-                    _attach_full_path_sample_context(
-                        item,
-                        item.get("full_path_autoregressive_samples"),
-                    )
+            full_path_velocity_samples.extend(
+                _attach_full_path_sample_context(
+                    item,
+                    item["full_path_velocity_samples"],
                 )
-                full_path_terminal_samples.extend(
-                    _attach_full_path_sample_context(
-                        item,
-                        item.get("full_path_terminal_samples"),
-                    )
+            )
+            full_path_autoregressive_samples.extend(
+                _attach_full_path_sample_context(
+                    item,
+                    item["full_path_autoregressive_samples"],
                 )
-
-        flat_batch = []
-        for item in batch:
-            if item is None:
-                continue
-            multi_step_samples = item.get("multi_step_samples")
-            if multi_step_samples:
-                flat_batch.extend(multi_step_samples)
-            else:
-                flat_batch.append(item)
-        batch = flat_batch
-
-        if "posterior_trees" in batch[0]:
-            ids = [item["id"] for item in batch]
-            posterior_trees = [item["posterior_trees"] for item in batch]
-            mappings = [item["num_to_name"] for item in batch]
-            phyla_embeddings = None
-
-            return {
-                "ids": ids,
-                "posterior_trees": posterior_trees,
-                "phyla_embeddings": phyla_embeddings,
-                "mappings": mappings,
-                "nexus_filepaths": [item["nexus_path"] for item in batch],
-                "tree_paths": [item["tree_paths"] for item in batch],
-            }
+            )
 
         # preset_subtree_num is accepted but currently unused in logic below
         # Just ensuring signature matches call site
@@ -3051,16 +2168,11 @@ class PhylaDataModule(pl.LightningDataModule):
             "mappings": mappings,
             "sequence_ordering_maps": [item["seq_ordering_map"] for item in batch],
             "bank_group_key": [item.get("bank_group_key") for item in batch],
-        }
-        if full_path_control_mode:
-            to_run["full_path_velocity_samples"] = list(full_path_velocity_samples)
-            to_run["full_path_autoregressive_samples"] = list(
+            "full_path_velocity_samples": list(full_path_velocity_samples),
+            "full_path_autoregressive_samples": list(
                 full_path_autoregressive_samples
-            )
-            to_run["full_path_terminal_samples"] = list(
-                full_path_terminal_samples
-            )
-            to_run["_full_path_control_mode"] = True
+            ),
+        }
         return to_run
 
 

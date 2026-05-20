@@ -1,5 +1,4 @@
 import torch
-from ete3 import Tree as EteTree
 
 from run.training_helpers import *
 
@@ -10,43 +9,19 @@ class DiscreteSamplerMixin:
         newick_starting_trees: list[str],
         phyla_embeddings,
         case_indices=None,
-        num_samples=None,
         mapping=None,
         dataset_ids=None,
-        T=1.0,
         dt_base=0.02,
         eps_len=1e-8,
-        hit_tol=1e-10,
-        first_hit_tol=1e-4,
         autoregressive_birth_length=1e-3,
-        stop_on_no_valid_merge=False,
         max_events=1000,
         max_steps=20000,
-        topology_repeat_cap=0,
-        KNN_TOPM=32,
-        KNN_TAU=0.05,
-        KNN_STOCHASTIC=False,
-        debug_real_tree=None,
         return_trace: bool = False,
         target_trees: list[str] | None = None,
         first_hit_start_topology_features=None,
         autoregressive_start_topology_features=None,
         first_hit_start_topology_embeddings=None,
         first_hit_start_topology_pad_mask=None,
-        first_hit_start_tree_graph_context=None,
-        split_multi_label_events: bool = False,
-        max_allowed_polytomy_size: int = -1,
-        oversize_polytomy_policy: str = "none",
-        oversize_polytomy_blacklist_revisits: bool = False,
-        oversize_polytomy_min_dt_escape: float = 0.0,
-        fixed_dt_sampling: bool = False,
-        max_autoregressive_merges_per_boundary: int = -1,
-        prefix_replay_velocity_quota: int = 0,
-        prefix_replay_autoregressive_quota: int = 0,
-        prefix_replay_split_multi_label_events: bool = False,
-        oracle_first_hit_use_at_sampling: bool = False,
-        oracle_gate_first_hit_use_at_sampling: bool = False,
-        oracle_boundary_vanish_use_at_sampling: bool = False,
         trace_state_rf: bool = True,
         explicit_autoregressive_component_groups: bool = True,
     ):
@@ -153,4 +128,3 @@ class DiscreteSamplerMixin:
         if return_trace:
             return result + (traces[0] if len(traces) == 1 else traces,)
         return result
-

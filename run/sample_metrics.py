@@ -186,7 +186,6 @@ class SampleMetricsMixin:
         dataset_split = self.dataset.dataset_train if train else self.dataset.dataset_val
         use_random_fixed_pair_bank = (
             bool(train)
-            and self.sampling_random_fixed_pair_bank_use_at_sampling
             and getattr(dataset_split, "overfit_fixed_pair", False)
         )
         cached = None if use_random_fixed_pair_bank else self._cached_harness_sampling_pairs.get(cache_key)
@@ -243,19 +242,11 @@ class SampleMetricsMixin:
                 if hasattr(dataset_split, "return_nexus_number_to_name")
                 else fixed_pair.get("name_mapping")
             )
-            explicit_max_events = max(
-                int(getattr(dataset_split, "overfit_event_prefix_count", -1)),
-                -1,
-            )
-            if explicit_max_events >= 0:
-                max_events = explicit_max_events
-            else:
-                max_events = len(fixed_pair["final_labels"])
             pair = {
                 "start_tree": start_tree,
                 "target_tree": target_tree,
                 "n_leaves": len(EteTree(start_tree, format=1).get_leaves()),
-                "max_events": int(max_events),
+                "max_events": int(len(fixed_pair["final_labels"])),
                 "name_mapping": name_mapping,
             }
             self._cached_harness_sampling_pairs[cache_key] = pair
@@ -287,17 +278,10 @@ class SampleMetricsMixin:
             offset=0,
             tree_kind="target tree",
         )
-        explicit_max_events = max(
-            int(getattr(dataset_split, "overfit_event_prefix_count", -1)),
-            -1,
+        boundary_paths = return_tree_boundary_merge_paths(start_tree, target_tree)
+        max_events = int(
+            sum(len(path.get("events", [])) for path in boundary_paths)
         )
-        if explicit_max_events >= 0:
-            max_events = explicit_max_events
-        else:
-            boundary_paths = return_tree_boundary_merge_paths(start_tree, target_tree)
-            max_events = int(
-                sum(len(path.get("events", [])) for path in boundary_paths)
-            )
         pair = {
             "start_tree": start_tree,
             "target_tree": target_tree,
@@ -440,19 +424,6 @@ class SampleMetricsMixin:
                     _predict_first_hit_mask_with_fallback(
                         first_hit_logits[0].squeeze(1).detach().cpu().numpy(),
                         candidate_mask,
-                        max_edges=getattr(
-                            self, "velocity_first_hit_sampling_max_edges", -1
-                        ),
-                        fallback_threshold=getattr(
-                            self,
-                            "velocity_first_hit_sampling_fallback_threshold",
-                            -1,
-                        ),
-                        fallback_top_k=getattr(
-                            self,
-                            "velocity_first_hit_sampling_fallback_top_k",
-                            -1,
-                        ),
                     )
                 )
                 true_first_mask = _oracle_first_hit_mask_for_sampling(
@@ -628,18 +599,6 @@ class SampleMetricsMixin:
             device=self.device,
             dataset_id=dataset_id,
         )
-        dataset_obj = getattr(self, "dataset", None)
-        dataset_split = None
-        if dataset_obj is not None:
-            dataset_split = (
-                getattr(dataset_obj, "dataset_train", None)
-                if train
-                else getattr(dataset_obj, "dataset_val", None)
-            )
-        split_multi_label_events = bool(
-            getattr(dataset_split, "overfit_split_multi_subset_events", False)
-        )
-        fixed_dt_base = self.sampling_fixed_dt_base
         max_steps = self.sampling_max_steps
         uncapped_events = self.sampling_max_events_uncapped
         max_events = None if uncapped_events else self.sampling_max_events
@@ -650,32 +609,13 @@ class SampleMetricsMixin:
                 max_events = 1024
         sample_kwargs = {
             "phyla_embeddings": phyla_embeddings,
-            "num_samples": 1,
-            "T": 1.0,
-            "dt_base": (
-                float(fixed_dt_base)
-                if fixed_dt_base is not None
-                else self.training_sampling_dt_base
-            ),
-            "fixed_dt_sampling": bool(fixed_dt_base is not None),
+            "dt_base": self.training_sampling_dt_base,
             "max_steps": max_steps,
             "max_events": max_events,
-            "max_autoregressive_merges_per_boundary": int(
-                self.sampling_max_autoregressive_merges_per_boundary
-            ),
             "return_trace": True,
-            "trace_state_rf": bool(
-                getattr(self, "sample_metrics_trace_state_rf_enabled", False)
-            ),
-            "explicit_autoregressive_component_groups": bool(
-                getattr(
-                    self,
-                    "sample_metrics_explicit_autoregressive_component_groups_enabled",
-                    True,
-                )
-            ),
+            "trace_state_rf": False,
+            "explicit_autoregressive_component_groups": True,
             "target_trees": [pair["target_tree"]],
-            "split_multi_label_events": split_multi_label_events,
             "dataset_ids": [dataset_id] if dataset_id else None,
         }
         needs_frozen_ar_case_probe = (
@@ -1811,10 +1751,6 @@ class SampleMetricsMixin:
         return metrics
 
     def _sample_compare_harness_can_batch_discrete_phase(self, pairs, sample_kwargs):
-        if not bool(getattr(self, "sample_metrics_batched_discrete_phase_enabled", True)):
-            return False
-        if not bool(getattr(self, "sampling_discrete_phase_rollout_use_at_sampling", False)):
-            return False
         if len(pairs) <= 1:
             return False
         if bool(getattr(self, "sample_metrics_trace_topology_repeats_enabled", False)):
@@ -1860,28 +1796,6 @@ class SampleMetricsMixin:
         return torch.tensor(case_indices, dtype=torch.long, device=self.device)
 
     def _sample_compare_harness_tokenize_with_edge_lengths(self, newicks):
-        if bool(
-            getattr(
-                self,
-                "sample_metrics_reuse_tokenizer_edge_lengths_enabled",
-                True,
-            )
-        ):
-            tokenizer_forward = getattr(self.model.tokenizer, "forward", None)
-            supports_edge_lengths = False
-            try:
-                supports_edge_lengths = (
-                    "return_edge_branch_lengths"
-                    in inspect.signature(tokenizer_forward).parameters
-                )
-            except (TypeError, ValueError):
-                supports_edge_lengths = False
-            if supports_edge_lengths:
-                tokenized_with_lengths = self.model.tokenizer(
-                    newicks,
-                    return_edge_branch_lengths=True,
-                )
-                return tokenized_with_lengths[:-1], tokenized_with_lengths[-1]
         return self.model.tokenizer(newicks), None
 
     def _sample_compare_harness_batch_discrete_phase(self, pairs, train=True):
@@ -2060,17 +1974,6 @@ class SampleMetricsMixin:
                     _predict_first_hit_mask_with_fallback(
                         first_logits,
                         candidate_mask,
-                        max_edges=getattr(self, "velocity_first_hit_sampling_max_edges", -1),
-                        fallback_threshold=getattr(
-                            self,
-                            "velocity_first_hit_sampling_fallback_threshold",
-                            -1,
-                        ),
-                        fallback_top_k=getattr(
-                            self,
-                            "velocity_first_hit_sampling_fallback_top_k",
-                            -1,
-                        ),
                     )
                 )
                 pred_neg = (
@@ -2084,16 +1987,7 @@ class SampleMetricsMixin:
                 dt_target = float(
                     np.max(lengths[pred_neg] / np.maximum(-velocities[pred_neg], eps_len))
                 )
-                if bool(
-                    getattr(
-                        self,
-                        "sampling_discrete_phase_exact_boundary_step_use_at_sampling",
-                        False,
-                    )
-                ):
-                    dt = float(dt_target)
-                else:
-                    dt = min(float(state["dt_base"]), dt_target)
+                dt = float(dt_target)
                 L_new = lengths + dt * velocities
                 collapse_mask = predicted_first_mask.copy()
                 if np.any(collapse_mask):
@@ -2222,13 +2116,7 @@ class SampleMetricsMixin:
                         td_ar.keys(),
                         top_only=False,
                     )
-                    if planned_merges and not bool(
-                        getattr(
-                            self,
-                            "sampling_apply_all_planned_ar_merges_per_forward_enabled",
-                            False,
-                        )
-                    ):
+                    if planned_merges:
                         planned_merges = planned_merges[:1]
                     if not planned_merges:
                         state["stopped_for_no_valid_merge"] = True
@@ -2896,8 +2784,7 @@ class SampleMetricsMixin:
                 metrics.update(self._evaluate_fixed_pair_path_metrics(train=train))
                 return metrics
         if (
-            getattr(dataset_split, "overfit_full_path_control_mode", False)
-            and getattr(dataset_split, "_frozen_full_path_control_selections", None)
+            getattr(dataset_split, "_frozen_full_path_control_selections", None)
         ):
             max_pairs = min(
                 int(num_pairs),

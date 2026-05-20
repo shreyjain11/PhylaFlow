@@ -60,16 +60,10 @@ trainer:
 
   phyla_precomputed_embeddings_path: ${PHYLAFLOW_ARTIFACT_ROOT}/phyla_embeddings
 
-  velocity_loss_mode: plain
-  velocity_loss_plain_weight: 1.0
   training_step_velocity_weight: 1.0
   training_step_autoregressive_weight: 0.2
-  training_step_separate_optimizer_steps: true
-
-  autoregressive_use_time: true
 
   velocity_first_hit_head_weight: 10.0
-  velocity_first_hit_head_use_at_sampling: true
   velocity_first_hit_loss_tol: 0.0001
   velocity_first_hit_false_positive_mass_weight: 5.0
   velocity_logtau_all_weight: 2.0
@@ -78,18 +72,9 @@ trainer:
   velocity_event_precision_weight: 10.0
   velocity_event_precision_margin: 1.0
 
-  velocity_probe_direct_set_loss: true
-  velocity_probe_direct_set_anchor_only: true
-  velocity_probe_direct_set_target_negative_weight: 1.0
-  training_step_probe_parity_joint_update: true
-
-  sampling_discrete_phase_rollout_use_at_sampling: true
-  sampling_discrete_phase_exact_boundary_step_use_at_sampling: true
   sampling_discrete_phase_max_phases: 8
   sampling_max_steps: 128
   sampling_max_events: 500
-  sampling_random_fixed_pair_bank_use_at_sampling: true
-  sampling_use_inference_mode: true
 
   sample_metrics_trace_path: ${PHYLAFLOW_OUTPUT_ROOT}/metrics/final_model_metrics.jsonl
   sample_metrics_num_pairs: 42
@@ -106,9 +91,5 @@ data:
   batch_size: 1
   num_workers: 0
 
-  overfit_full_path_control_mode: true
-  overfit_full_path_control_use_discrete_phase_time: true
   overfit_full_path_control_seed: 2026050318
   overfit_virtual_epoch_size: 8000
-  overfit_fixed_pair: true
-  overfit_fixed_pair_group_by_json_metadata: true

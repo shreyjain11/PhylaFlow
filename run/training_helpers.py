@@ -1,4 +1,3 @@
-import functools
 import itertools
 import json
 import math
@@ -1859,7 +1858,7 @@ def _build_start_tree_graph_context(
     return start_tokens[:, 0, :]
 
 
-def _resolve_replay_phyla_embeddings(module, samples, tree_key):
+def _resolve_full_path_phyla_embeddings(module, samples, tree_key):
     if not samples:
         return None
     has_precomputed = (
@@ -1915,52 +1914,6 @@ def _resolve_replay_phyla_embeddings(module, samples, tree_key):
     if all(tuple(embedding.shape) == first_shape for embedding in embeddings):
         return torch.stack(embeddings, dim=0)
     return embeddings
-
-
-def _target_splits_from_velocity_sample(sample):
-    tree_obj = Tree(sample["newick_tree"])
-    encoder = BHVEncoder()
-    masks, lengths = encoder.return_BHV_encoding(tree_obj)
-    len_map = {int(m): float(l) for m, l in zip(masks, lengths) if l is not None}
-    model_masks = [
-        int(m)
-        for m, l in zip(masks, lengths)
-        if l is not None and float(l) > 1e-8 and int(m) != 0
-    ]
-    if not model_masks:
-        return []
-    real_max_bit = max(int(m).bit_length() for m in model_masks)
-    full_mask = (1 << real_max_bit) - 1 if real_max_bit > 0 else 0
-    taus = []
-    matched = []
-    for orig_mask, vel in sample.get("velocity", {}).items():
-        vel = float(vel)
-        mask = int(orig_mask)
-        if mask.bit_length() == real_max_bit + 1:
-            mask = remove_bit(mask, int(sample["num_leaves"]) - 1)
-        elif mask.bit_length() > real_max_bit + 1:
-            continue
-        matched_mask = mask
-        if matched_mask not in model_masks:
-            comp = full_mask ^ matched_mask
-            if comp in model_masks:
-                matched_mask = comp
-            else:
-                continue
-        k_bits = int(matched_mask).bit_count()
-        if min(k_bits, real_max_bit - k_bits) == 1:
-            continue
-        length = len_map.get(int(matched_mask))
-        if length is None and full_mask:
-            length = len_map.get(full_mask ^ int(matched_mask))
-        if length is None or float(length) <= 1e-8 or vel >= -1e-3:
-            continue
-        taus.append(float(length) / max(-vel, 1e-3))
-        matched.append(int(matched_mask))
-    if not taus:
-        return []
-    tau_min = min(taus)
-    return sorted(m for m, t in zip(matched, taus) if abs(t - tau_min) <= 1e-3)
 
 
 def _extract_case_index_from_group_key(group_key):
@@ -2147,101 +2100,32 @@ def _infer_case_group_keys_from_batch(module, batch):
     return resolved
 
 
-def _build_velocity_replay_batch(module, samples):
+def _velocity_full_path_state_key(newick_tree, next_boundary_tree=None):
+    if not newick_tree:
+        return None, None
+    try:
+        topology_key = _topology_key(str(newick_tree))
+        next_boundary_key = (
+            _topology_key(str(next_boundary_tree))
+            if next_boundary_tree
+            else None
+        )
+    except Exception:
+        return None, None
+    return topology_key, next_boundary_key
+
+
+def _build_velocity_full_path_batch(module, samples):
     if not samples:
         return None
 
-    all_samples = list(samples)
-    filtered_samples = list(all_samples)
-    if bool(getattr(module, "velocity_probe_direct_set_anchor_only", False)):
-        anchor_samples = [sample for sample in filtered_samples if sample.get("anchor_family")]
-        if anchor_samples:
-            filtered_samples = anchor_samples
-    samples = filtered_samples
-
+    samples = list(samples)
     newicks = [sample["newick_tree"] for sample in samples]
     structural_trees = _structuralize_trees_with_cache(module, newicks)
     with torch.no_grad():
         tokenized = _move_tokenized_batch_to_device(
             module.model.tokenizer(structural_trees),
             module.device,
-        )
-    canonical_targets_by_topology = {}
-    canonical_targets_by_state = {}
-    if bool(getattr(module, "velocity_probe_direct_set_loss", False)):
-        try:
-            start_sample = None
-            for candidate in all_samples:
-                if int(candidate.get("path_index", -1)) == 0 and not candidate.get("anchor_family"):
-                    start_sample = candidate
-                    break
-            if start_sample is None:
-                for candidate in all_samples:
-                    if not candidate.get("anchor_family"):
-                        start_sample = candidate
-                        break
-            if start_sample is None and all_samples:
-                start_sample = all_samples[0]
-            target_tree = None if start_sample is None else start_sample.get("target_tree")
-            if start_sample is not None and target_tree is not None:
-                canonical_map, _ = _build_pair_oracle_orthant_velocity_label_map(
-                    str(start_sample["newick_tree"]),
-                    str(target_tree),
-                )
-                for sample in samples:
-                    topo_key, _ = _velocity_replay_state_key(
-                        sample.get("newick_tree"),
-                        sample.get("velocity_next_boundary_tree"),
-                    )
-                    if topo_key is None:
-                        continue
-                    canonical = canonical_map.get(topo_key)
-                    if canonical is None:
-                        continue
-                    canonical_sample = {
-                        **dict(canonical),
-                        "num_leaves": int(sample["num_leaves"]),
-                    }
-                    target_splits = _target_splits_from_velocity_sample(canonical_sample)
-                    canonical_targets_by_topology[topo_key] = target_splits
-                    canonical_state_key = _velocity_replay_state_key(
-                        canonical_sample.get("newick_tree"),
-                        canonical_sample.get("velocity_next_boundary_tree"),
-                    )
-                    canonical_targets_by_state[canonical_state_key] = target_splits
-        except Exception:
-            canonical_targets_by_topology = {}
-            canonical_targets_by_state = {}
-    probe_direct_set_targets = []
-    probe_direct_set_mask = []
-    include_base_samples = bool(
-        getattr(module, "velocity_probe_direct_set_include_base_samples", False)
-    )
-    for sample in samples:
-        use_direct = bool(
-            getattr(module, "velocity_probe_direct_set_loss", False)
-            and (sample.get("anchor_family") or include_base_samples)
-        )
-        probe_direct_set_mask.append(bool(use_direct))
-        if not use_direct:
-            probe_direct_set_targets.append([])
-            continue
-        topo_key, next_boundary_key = _velocity_replay_state_key(
-            sample.get("newick_tree"),
-            sample.get("velocity_next_boundary_tree"),
-        )
-        canonical_target = None
-        if topo_key is not None:
-            if sample.get("velocity_next_boundary_tree"):
-                canonical_target = canonical_targets_by_state.get(
-                    (topo_key, next_boundary_key)
-                )
-            else:
-                canonical_target = canonical_targets_by_topology.get(topo_key)
-        probe_direct_set_targets.append(
-            canonical_target
-            if canonical_target is not None
-            else _target_splits_from_velocity_sample(sample)
         )
     first_hit_case_index_tensor = None
     if getattr(module.model, "first_hit_head_mode", "base") == "case_adapted_mlp":
@@ -2250,16 +2134,15 @@ def _build_velocity_replay_batch(module, samples):
             device=module.device,
             module=module,
         )
-    phyla_embeddings = _resolve_replay_phyla_embeddings(
+    phyla_embeddings = _resolve_full_path_phyla_embeddings(
         module,
         samples,
         "newick_tree",
     )
     return {
-        "_is_replay_batch": True,
+        "_is_full_path_batch": True,
         "_skip_training_augmentations": True,
         "_use_full_path_control_velocity_loss": True,
-        "_use_probe_parity_direct_set_loss": bool(any(probe_direct_set_mask)),
         "tokenized_trees": tokenized,
         "batched_time": torch.tensor(
             [float(sample["timepoint"]) for sample in samples],
@@ -2278,13 +2161,11 @@ def _build_velocity_replay_batch(module, samples):
             sample.get("velocity_next_boundary_tree") for sample in samples
         ],
         "num_leaves": [int(sample["num_leaves"]) for sample in samples],
-        "_probe_direct_set_targets": probe_direct_set_targets,
-        "_probe_direct_set_sample_mask": probe_direct_set_mask,
         "_first_hit_case_indices": first_hit_case_index_tensor,
     }
 
 
-def _build_autoregressive_replay_batch(module, samples):
+def _build_autoregressive_full_path_batch(module, samples):
     if not samples:
         return None
 
@@ -2302,13 +2183,13 @@ def _build_autoregressive_replay_batch(module, samples):
             device=module.device,
             module=module,
         )
-    phyla_embeddings = _resolve_replay_phyla_embeddings(
+    phyla_embeddings = _resolve_full_path_phyla_embeddings(
         module,
         samples,
         "newick",
     )
     return {
-        "_is_replay_batch": True,
+        "_is_full_path_batch": True,
         "_skip_training_augmentations": True,
         "tokenized_autoregressive_trees": tokenized,
         "newick_autoregressive_trees": newicks,
@@ -2948,33 +2829,6 @@ def _apply_merge_subset_to_newick(
     return newick
 
 
-def _jitter_internal_lengths_newick(current_newick, jitter_scale, min_length=1e-4):
-    tree = EteTree(current_newick, format=1)
-    internal_nodes = [
-        node
-        for node in tree.traverse("postorder")
-        if not node.is_leaf() and not node.is_root()
-    ]
-    if not internal_nodes:
-        return None
-
-    changed = False
-    lower = max(0.0, 1.0 - float(jitter_scale))
-    upper = 1.0 + float(jitter_scale)
-    for node in internal_nodes:
-        dist = float(node.dist)
-        if not math.isfinite(dist) or dist <= 0.0:
-            continue
-        factor = random.uniform(lower, upper)
-        new_dist = max(float(min_length), dist * factor)
-        if abs(new_dist - dist) > 1e-12:
-            node.dist = new_dist
-            changed = True
-
-    if not changed:
-        return None
-    return tree.write(format=1)
-
 
 def _normalize_tree_like_dataset(tree_newick):
     t_obj = EteTree(tree_newick, format=1)
@@ -3052,17 +2906,6 @@ def _summarize_trace_topology_repeats(trace):
     }
 
 
-@functools.lru_cache(maxsize=None)
-def _oracle_training_topology_keys(current_newick, target_newick):
-    keys = {_topology_key(current_newick)}
-    boundary_paths = return_tree_boundary_merge_paths(current_newick, target_newick)
-    for boundary_path in boundary_paths:
-        keys.add(_topology_key(boundary_path["start_newick"]))
-        keys.add(_topology_key(boundary_path["end_newick"]))
-        for event in boundary_path["events"]:
-            keys.add(_topology_key(event["newick"]))
-    return tuple(sorted(keys))
-
 
 def _remap_tree_with_sequence_ordering(
     tree_newick, seq_ordering_map, offset=0, tree_kind="tree"
@@ -3089,199 +2932,6 @@ def _remap_tree_with_sequence_ordering(
 
     return t_obj.write(format=1)
 
-
-def _choose_wrong_pair_merge_subset(current_newick, target_newick, tokenizer):
-    current_tree = Tree(current_newick)
-    current_groups = get_structural_polytomy_groups_from_newick(current_newick)
-    if not current_groups:
-        return None
-
-    n_leaves = current_tree.n_leaves
-    shuffled_groups = [tuple(int(component) for component in group) for group in current_groups]
-    random.shuffle(shuffled_groups)
-
-    for group_splits in shuffled_groups:
-        if len(group_splits) < 3:
-            continue
-
-        ready_subsets = {
-            tuple(sorted(int(split) for split in subset))
-            for subset in _ready_target_merge_subsets_for_group(
-                group_splits,
-                target_newick,
-                n_leaves,
-            )
-        }
-
-        candidates = []
-        for left_idx in range(len(group_splits)):
-            for right_idx in range(left_idx + 1, len(group_splits)):
-                subset = tuple(
-                    sorted(
-                        (
-                            int(group_splits[left_idx]),
-                            int(group_splits[right_idx]),
-                        )
-                    )
-                )
-                if subset in ready_subsets:
-                    continue
-                candidates.append(subset)
-
-        random.shuffle(candidates)
-        for subset in candidates:
-            perturbed_newick = _apply_merge_subset_to_newick(
-                tokenizer,
-                current_newick,
-                subset,
-            )
-            if perturbed_newick is None or perturbed_newick == current_newick:
-                continue
-            return subset
-
-    return None
-
-
-def _choose_model_wrong_pair_merge_subset(
-    module,
-    current_newick,
-    target_newick,
-    current_time,
-    phyla_embedding=None,
-):
-    current_tree = Tree(current_newick)
-    current_groups = get_structural_polytomy_groups_from_newick(current_newick)
-    if not current_groups:
-        return None
-
-    tokenized = _move_tokenized_batch_to_device(
-        module.model.tokenizer([current_newick]),
-        module.device,
-    )
-    existing_splits = set(_extract_edge_splits_from_tokenized(tokenized, batch_index=0))
-    time_tensor = torch.tensor(
-        [float(current_time)],
-        dtype=torch.float32,
-        device=module.device,
-    )
-
-    with torch.no_grad():
-        logit_outputs = module.forward(
-            tokenized,
-            time_tensor,
-            phyla_embedding,
-            autoregressive=True,
-            autoregressive_component_groups=[current_groups],
-        )
-
-    if not logit_outputs:
-        return None
-
-    n_leaves = current_tree.n_leaves
-    ready_subsets_by_group = {}
-    for group_splits in current_groups:
-        normalized_group = tuple(sorted(int(component) for component in group_splits))
-        ready_subsets_by_group[normalized_group] = {
-            tuple(sorted(int(split) for split in subset))
-            for subset in _ready_target_merge_subsets_for_group(
-                normalized_group,
-                target_newick,
-                n_leaves,
-            )
-        }
-
-    planned_merges = _plan_autoregressive_boundary_merges(
-        logit_outputs,
-        existing_splits,
-    )
-    for planned in planned_merges:
-        group_splits = tuple(sorted(int(split) for split in planned["splits_represented"]))
-        ready_subsets = ready_subsets_by_group.get(group_splits, set())
-        subset, new_split = planned["subsets"][0]
-        normalized_subset = tuple(sorted(int(split) for split in subset))
-        if normalized_subset in ready_subsets or int(new_split) in existing_splits:
-            continue
-        return {
-            "subset": normalized_subset,
-            "new_split": int(new_split),
-            "source": "planned_wrong",
-        }
-
-    best_candidate = None
-    best_rank = None
-    for output in logit_outputs:
-        group_splits = tuple(sorted(int(split) for split in output["splits_represented"]))
-        if len(group_splits) < 3:
-            continue
-
-        ready_subsets = ready_subsets_by_group.get(group_splits, set())
-        polytomy_score = float(output["polytomy_pred"].detach().cpu().item())
-        logits = output["logits"].detach()
-        splits = [int(split) for split in output["splits_represented"]]
-
-        for left_idx in range(len(splits)):
-            for right_idx in range(left_idx + 1, len(splits)):
-                subset = tuple(sorted((int(splits[left_idx]), int(splits[right_idx]))))
-                if subset in ready_subsets:
-                    continue
-
-                new_split = int(subset[0]) | int(subset[1])
-                if new_split in existing_splits:
-                    continue
-
-                score = float(logits[left_idx, right_idx].item())
-                if not math.isfinite(score):
-                    continue
-
-                rank = (score, polytomy_score)
-                if best_rank is None or rank > best_rank:
-                    best_rank = rank
-                    best_candidate = {
-                        "subset": subset,
-                        "new_split": new_split,
-                        "source": "top_wrong_pair",
-                    }
-
-    return best_candidate
-
-
-def _plan_first_autoregressive_model_merge(
-    module,
-    current_newick,
-    current_time,
-    phyla_embedding=None,
-):
-    tokenized = _move_tokenized_batch_to_device(
-        module.model.tokenizer([current_newick]),
-        module.device,
-    )
-    groups = [get_structural_polytomy_groups_from_newick(current_newick)]
-    if not groups[0]:
-        return None
-
-    time_tensor = module._effective_autoregressive_time_tensor(current_time)
-
-    with torch.no_grad():
-        logit_outputs = module.forward(
-            tokenized,
-            time_tensor,
-            phyla_embedding,
-            autoregressive=True,
-            autoregressive_component_groups=groups,
-        )
-
-    planned_merges = _plan_autoregressive_boundary_merges(
-        logit_outputs,
-        _extract_edge_splits_from_tokenized(tokenized, batch_index=0),
-    )
-    if not planned_merges:
-        return None
-
-    subset, new_split = planned_merges[0]["subsets"][0]
-    return {
-        "subset": tuple(int(split) for split in subset),
-        "new_split": int(new_split),
-    }
 
 
 def _discrete_phase_rollout(
@@ -3367,7 +3017,6 @@ def _discrete_phase_rollout(
         "stopped_for_no_valid_merge": False,
         "stopped_for_repeated_topology": False,
         "skipped_no_valid_boundary_revisits": 0.0,
-        "stopped_for_prefix_replay_quota": False,
         "silent_boundary_recoveries": 0.0,
         "autoregressive_boundary_stop_count": 0.0,
     }
@@ -3458,17 +3107,6 @@ def _discrete_phase_rollout(
             _predict_first_hit_mask_with_fallback(
                 first_logits,
                 candidate_mask,
-                max_edges=getattr(module, "velocity_first_hit_sampling_max_edges", -1),
-                fallback_threshold=getattr(
-                    module,
-                    "velocity_first_hit_sampling_fallback_threshold",
-                    -1,
-                ),
-                fallback_top_k=getattr(
-                    module,
-                    "velocity_first_hit_sampling_fallback_top_k",
-                    -1,
-                ),
             )
         )
         pred_neg = predicted_first_mask & (velocities < 0.0) & (lengths > eps_len)
@@ -3488,16 +3126,7 @@ def _discrete_phase_rollout(
         dt_target = float(
             np.max(lengths[pred_neg] / np.maximum(-velocities[pred_neg], eps_len))
         )
-        if bool(
-            getattr(
-                module,
-                "sampling_discrete_phase_exact_boundary_step_use_at_sampling",
-                False,
-            )
-        ):
-            dt = float(dt_target)
-        else:
-            dt = min(float(dt_base), dt_target)
+        dt = float(dt_target)
         L_new = lengths + dt * velocities
         collapse_mask = predicted_first_mask.copy()
         if np.any(collapse_mask):
@@ -3574,13 +3203,7 @@ def _discrete_phase_rollout(
                 td_ar.keys(),
                 top_only=False,
             )
-            if planned_merges and not bool(
-                getattr(
-                    module,
-                    "sampling_apply_all_planned_ar_merges_per_forward_enabled",
-                    False,
-                )
-            ):
+            if planned_merges:
                 planned_merges = planned_merges[:1]
             if not planned_merges:
                 trace["autoregressive"].append(

@@ -2,7 +2,6 @@ import inspect
 import logging
 import math
 import numbers
-import random
 
 import numpy as np
 import torch
@@ -13,8 +12,6 @@ from utils.bhv_utils import (
     BHVEncoder,
     _split_multi_label_training_events,
     get_structural_polytomy_groups_from_newick,
-    return_sampled_tree_boundary_decisions,
-    return_sampled_tree_orthant_velocity,
 )
 from utils.random_tree import Tree
 from utils.utils import (
@@ -55,15 +52,11 @@ class TrainingLossMixin:
         return first_hit_logits
 
     def _effective_autoregressive_time_value(self, time_value):
-        if not self.autoregressive_use_time:
-            return 0.0
         return float(time_value)
 
     def _effective_autoregressive_time_tensor(self, time_value):
         if torch.is_tensor(time_value):
-            if self.autoregressive_use_time:
-                return time_value
-            return torch.zeros_like(time_value, dtype=torch.float32, device=time_value.device)
+            return time_value
         return torch.tensor(
             [self._effective_autoregressive_time_value(time_value)],
             dtype=torch.float32,
@@ -76,8 +69,6 @@ class TrainingLossMixin:
         event_index=None,
         max_events=None,
     ):
-        if not self.autoregressive_use_time:
-            return 0.0
         if event_index is None or max_events is None:
             return float(current_time)
         max_events = int(max_events)
@@ -103,149 +94,6 @@ class TrainingLossMixin:
             dtype=torch.float32,
             device=self.device,
         )
-
-    def _rollin_single_autoregressive_state(
-        self,
-        current_newick,
-        target_newick,
-        current_time,
-        phyla_embedding=None,
-    ):
-        planned_merge = _plan_first_autoregressive_model_merge(
-            self,
-            current_newick=current_newick,
-            current_time=current_time,
-            phyla_embedding=phyla_embedding,
-        )
-        if planned_merge is None:
-            return None
-
-        rolled_newick = _apply_merge_subset_to_newick(
-            self.model.tokenizer,
-            current_newick,
-            planned_merge["subset"],
-            new_split=planned_merge["new_split"],
-        )
-        if rolled_newick is None:
-            return None
-
-        corrective_events = return_sampled_tree_boundary_decisions(
-            rolled_newick,
-            target_newick,
-        )
-        if not corrective_events:
-            return None
-
-        next_event = corrective_events[0]
-        return {
-            "newick": rolled_newick,
-            "labels": next_event["labels"],
-            "stop_after_merge": bool(next_event.get("stop_after_merge", False)),
-            "time": self._effective_autoregressive_time_value(current_time),
-        }
-
-    def _dagger_rollin_single_autoregressive_state(
-        self,
-        current_newick,
-        target_newick,
-        current_time,
-        phyla_embedding=None,
-    ):
-        oracle_training_topologies = set(
-            _oracle_training_topology_keys(current_newick, target_newick)
-        )
-        state_newick = current_newick
-        state_time = float(current_time)
-
-        for rollout_step in range(self.autoregressive_dagger_max_steps):
-            planned_merge = _plan_first_autoregressive_model_merge(
-                self,
-                current_newick=state_newick,
-                current_time=state_time,
-                phyla_embedding=phyla_embedding,
-            )
-            if planned_merge is None:
-                return None
-
-            next_newick = _apply_merge_subset_to_newick(
-                self.model.tokenizer,
-                state_newick,
-                planned_merge["subset"],
-                new_split=planned_merge["new_split"],
-            )
-            if next_newick is None or next_newick == state_newick:
-                return None
-
-            if _topology_key(next_newick) not in oracle_training_topologies:
-                corrective_events = return_sampled_tree_boundary_decisions(
-                    next_newick,
-                    target_newick,
-                )
-                if not corrective_events:
-                    return None
-
-                next_event = corrective_events[0]
-                return {
-                    "newick": next_newick,
-                    "labels": next_event["labels"],
-                    "stop_after_merge": bool(next_event.get("stop_after_merge", False)),
-                    "time": self._effective_autoregressive_time_value(state_time),
-                    "rollout_steps": rollout_step + 1,
-                }
-
-            state_newick = next_newick
-
-        return None
-
-    def _perturb_autoregressive_single_state(
-        self,
-        current_newick,
-        target_newick,
-        current_time,
-        phyla_embedding=None,
-    ):
-        if self.autoregressive_structure_perturb_mode == "model_wrong_pair":
-            chosen_merge = _choose_model_wrong_pair_merge_subset(
-                self,
-                current_newick=current_newick,
-                target_newick=target_newick,
-                current_time=current_time,
-                phyla_embedding=phyla_embedding,
-            )
-        else:
-            subset = _choose_wrong_pair_merge_subset(
-                current_newick,
-                target_newick,
-                self.model.tokenizer,
-            )
-            chosen_merge = None if subset is None else {"subset": subset, "new_split": None}
-
-        if chosen_merge is None:
-            return None
-
-        perturbed_newick = _apply_merge_subset_to_newick(
-            self.model.tokenizer,
-            current_newick,
-            chosen_merge["subset"],
-            new_split=chosen_merge.get("new_split"),
-        )
-        if perturbed_newick is None:
-            return None
-
-        corrective_events = return_sampled_tree_boundary_decisions(
-            perturbed_newick,
-            target_newick,
-        )
-        if not corrective_events:
-            return None
-
-        next_event = corrective_events[0]
-        return {
-            "newick": perturbed_newick,
-            "labels": next_event["labels"],
-            "stop_after_merge": bool(next_event.get("stop_after_merge", False)),
-            "time": self._effective_autoregressive_time_value(current_time),
-        }
 
     def _attach_case_indices_to_batch(self, batch):
         if batch is None:
@@ -392,65 +240,7 @@ class TrainingLossMixin:
         batch = self._attach_case_indices_to_batch(batch)
         batch = self._attach_start_topology_features_to_batch(batch)
         batch = self._attach_start_tree_graph_context_to_batch(batch)
-        if batch.get("_skip_training_augmentations", False):
-            return batch, {"attempted": 0.0, "applied": 0.0}
-        if (
-            self.velocity_length_jitter_prob <= 0.0
-            or self.velocity_length_jitter_scale <= 0.0
-            or "original_trees" not in batch
-            or "target_trees" not in batch
-        ):
-            return batch, {"attempted": 0.0, "applied": 0.0}
-
-        newicks = list(batch["original_trees"])
-        velocity_labels = list(batch["batched_velocity"])
-        batched_time = batch.get("batched_time")
-        updated_times = batched_time.clone() if batched_time is not None else None
-        attempted = 0
-        applied = 0
-
-        for batch_index, (current_newick, target_newick) in enumerate(
-            zip(newicks, batch["target_trees"])
-        ):
-            if random.random() > self.velocity_length_jitter_prob:
-                continue
-            attempted += 1
-
-            perturbed_newick = _jitter_internal_lengths_newick(
-                current_newick,
-                self.velocity_length_jitter_scale,
-            )
-            if perturbed_newick is None:
-                continue
-
-            try:
-                sampled_newick, perturbed_velocity = return_sampled_tree_orthant_velocity(
-                    perturbed_newick,
-                    target_newick,
-                    0.0,
-                )
-            except Exception:
-                continue
-
-            newicks[batch_index] = sampled_newick
-            velocity_labels[batch_index] = perturbed_velocity
-            if updated_times is not None:
-                updated_times[batch_index] = 0.0
-            applied += 1
-
-        if applied == 0:
-            return batch, {"attempted": float(attempted), "applied": 0.0}
-
-        updated_batch = dict(batch)
-        updated_batch["original_trees"] = newicks
-        updated_batch["batched_velocity"] = velocity_labels
-        if updated_times is not None:
-            updated_batch["batched_time"] = updated_times
-        updated_batch["tokenized_trees"] = _move_tokenized_batch_to_device(
-            self.model.tokenizer(newicks),
-            self.device,
-        )
-        return updated_batch, {"attempted": float(attempted), "applied": float(applied)}
+        return batch
 
     def _prepare_autoregressive_training_batch(self, batch):
         batch = self._attach_start_topology_features_to_batch(batch)
@@ -487,157 +277,7 @@ class TrainingLossMixin:
                     batch = dict(batch)
                     batch["bank_group_key"] = list(group_keys)
                     batch["_autoregressive_case_indices"] = case_index_tensor
-        if batch.get("_skip_training_augmentations", False):
-            return batch, {
-                "rollin_attempted": 0.0,
-                "rollin_applied": 0.0,
-                "dagger_attempted": 0.0,
-                "dagger_applied": 0.0,
-                "dagger_rollout_steps": 0.0,
-                "structure_perturb_attempted": 0.0,
-                "structure_perturb_applied": 0.0,
-            }
-        if (
-            self.autoregressive_rollin_prob <= 0.0
-            and self.autoregressive_dagger_prob <= 0.0
-            and self.autoregressive_structure_perturb_prob <= 0.0
-            or "target_trees" not in batch
-            or "newick_autoregressive_trees" not in batch
-        ):
-            return batch, {
-                "rollin_attempted": 0.0,
-                "rollin_applied": 0.0,
-                "dagger_attempted": 0.0,
-                "dagger_applied": 0.0,
-                "dagger_rollout_steps": 0.0,
-                "structure_perturb_attempted": 0.0,
-                "structure_perturb_applied": 0.0,
-            }
-
-        newicks = list(batch["newick_autoregressive_trees"])
-        labels = list(batch["batched_autoregressive_labels"])
-        times = batch["batched_autoregressive_time"].detach().clone()
-        stop_after_merge = None
-        if "batched_autoregressive_stop_after_merge" in batch:
-            stop_after_merge = (
-                batch["batched_autoregressive_stop_after_merge"].detach().clone()
-            )
-
-        rollin_attempted = 0
-        rollin_applied = 0
-        dagger_attempted = 0
-        dagger_applied = 0
-        dagger_rollout_steps = 0
-        structure_attempted = 0
-        structure_applied = 0
-        for batch_index, (current_newick, target_newick) in enumerate(
-            zip(newicks, batch["target_trees"])
-        ):
-            if self.autoregressive_rollin_prob > 0.0:
-                if random.random() <= self.autoregressive_rollin_prob:
-                    rollin_attempted += 1
-
-                    phyla_embedding = None
-                    if batch["phyla_embeddings"] is not None:
-                        phyla_embedding = batch["phyla_embeddings"][batch_index : batch_index + 1]
-
-                    rolled = self._rollin_single_autoregressive_state(
-                        current_newick=current_newick,
-                        target_newick=target_newick,
-                        current_time=float(times[batch_index].item()),
-                        phyla_embedding=phyla_embedding,
-                    )
-                    if rolled is not None:
-                        current_newick = rolled["newick"]
-                        newicks[batch_index] = rolled["newick"]
-                        labels[batch_index] = rolled["labels"]
-                        if stop_after_merge is not None:
-                            stop_after_merge[batch_index] = (
-                                1.0 if rolled.get("stop_after_merge", False) else 0.0
-                            )
-                        times[batch_index] = float(rolled["time"])
-                        rollin_applied += 1
-
-            if self.autoregressive_dagger_prob > 0.0:
-                if random.random() <= self.autoregressive_dagger_prob:
-                    dagger_attempted += 1
-
-                    phyla_embedding = None
-                    if batch["phyla_embeddings"] is not None:
-                        phyla_embedding = batch["phyla_embeddings"][
-                            batch_index : batch_index + 1
-                        ]
-
-                    dagger = self._dagger_rollin_single_autoregressive_state(
-                        current_newick=current_newick,
-                        target_newick=target_newick,
-                        current_time=float(times[batch_index].item()),
-                        phyla_embedding=phyla_embedding,
-                    )
-                    if dagger is not None:
-                        current_newick = dagger["newick"]
-                        newicks[batch_index] = dagger["newick"]
-                        labels[batch_index] = dagger["labels"]
-                        if stop_after_merge is not None:
-                            stop_after_merge[batch_index] = (
-                                1.0 if dagger.get("stop_after_merge", False) else 0.0
-                            )
-                        times[batch_index] = float(dagger["time"])
-                        dagger_applied += 1
-                        dagger_rollout_steps += int(dagger["rollout_steps"])
-
-            if self.autoregressive_structure_perturb_prob > 0.0:
-                if random.random() <= self.autoregressive_structure_perturb_prob:
-                    structure_attempted += 1
-                    phyla_embedding = None
-                    if batch["phyla_embeddings"] is not None:
-                        phyla_embedding = batch["phyla_embeddings"][batch_index : batch_index + 1]
-                    perturbed = self._perturb_autoregressive_single_state(
-                        current_newick=current_newick,
-                        target_newick=target_newick,
-                        current_time=float(times[batch_index].item()),
-                        phyla_embedding=phyla_embedding,
-                    )
-                    if perturbed is not None:
-                        newicks[batch_index] = perturbed["newick"]
-                        labels[batch_index] = perturbed["labels"]
-                        if stop_after_merge is not None:
-                            stop_after_merge[batch_index] = (
-                                1.0 if perturbed.get("stop_after_merge", False) else 0.0
-                            )
-                        times[batch_index] = float(perturbed["time"])
-                        structure_applied += 1
-
-        if rollin_applied == 0 and dagger_applied == 0 and structure_applied == 0:
-            return batch, {
-                "rollin_attempted": float(rollin_attempted),
-                "rollin_applied": 0.0,
-                "dagger_attempted": float(dagger_attempted),
-                "dagger_applied": 0.0,
-                "dagger_rollout_steps": float(dagger_rollout_steps),
-                "structure_perturb_attempted": float(structure_attempted),
-                "structure_perturb_applied": 0.0,
-            }
-
-        updated_batch = dict(batch)
-        updated_batch["newick_autoregressive_trees"] = newicks
-        updated_batch["batched_autoregressive_labels"] = labels
-        updated_batch["batched_autoregressive_time"] = times
-        if stop_after_merge is not None:
-            updated_batch["batched_autoregressive_stop_after_merge"] = stop_after_merge
-        updated_batch["tokenized_autoregressive_trees"] = _move_tokenized_batch_to_device(
-            self.model.tokenizer(newicks),
-            self.device,
-        )
-        return updated_batch, {
-            "rollin_attempted": float(rollin_attempted),
-            "rollin_applied": float(rollin_applied),
-            "dagger_attempted": float(dagger_attempted),
-            "dagger_applied": float(dagger_applied),
-            "dagger_rollout_steps": float(dagger_rollout_steps),
-            "structure_perturb_attempted": float(structure_attempted),
-            "structure_perturb_applied": float(structure_applied),
-        }
+        return batch
 
     def forward(
         self,
@@ -661,10 +301,7 @@ class TrainingLossMixin:
         if torch.is_tensor(t):
             t = t.to(self.device)
         if not autoregressive:
-            return_first_hit_logits = (
-                self.velocity_first_hit_head_weight > 0.0
-                or self.velocity_first_hit_head_use_at_sampling
-            )
+            return_first_hit_logits = self.velocity_first_hit_head_weight > 0.0
             return_edge_features = (
                 self.branch_relax_head_weight > 0.0
                 or self.branch_relax_head_use_at_sampling
@@ -759,7 +396,7 @@ class TrainingLossMixin:
 
     def step(self, batch, eval=False, autoregressive=False):
         logs = {}
-        is_replay_batch = bool(batch.get("_is_replay_batch", False))
+        is_full_path_batch = bool(batch.get("_is_full_path_batch", False))
         if not eval and not autoregressive:
             self.current_step_value += 1
         if (
@@ -816,7 +453,7 @@ class TrainingLossMixin:
                 batch["phyla_embeddings"] = phyla_embeddings_list
 
         if not autoregressive:
-            batch, velocity_perturb_stats = self._prepare_velocity_training_batch(batch)
+            batch = self._prepare_velocity_training_batch(batch)
             (
                 v_pred,
                 edge_split_masks,
@@ -847,309 +484,6 @@ class TrainingLossMixin:
                 self.train_tokenized_trees = batch["tokenized_trees"]
                 self.train_batched_time = batch["batched_time"]
                 self.train_tree = batch["original_trees"]
-            # else:
-            #     if calculate_norm_rf(batch['original_trees'][0], self.train_tree[0]) != 0:
-            #         raise Exception("Training tree topology changed during training!")
-            #     elif not torch.equal(batch["tokenized_trees"][0], self.train_tokenized_trees[0]):
-            #         import pdb; pdb.set_trace()
-            #         raise Exception("Training tokenized trees changed during training!")
-
-            direct_set_loss = None
-            direct_set_mse_weight = 0.0
-            direct_set_loss_weight = float(
-                getattr(self, "velocity_probe_direct_set_loss_weight", 1.0)
-            )
-            if bool(batch.get("_use_probe_parity_direct_set_loss", False)):
-                direct_losses = []
-                exact_flags = []
-                jaccards = []
-                direct_set_pos_weights = []
-                target_negative_rates = []
-                target_negative_losses = []
-                nontarget_nonnegative_losses = []
-                sample_mask = list(
-                    batch.get(
-                        "_probe_direct_set_sample_mask",
-                        [True for _ in batch.get("original_trees", [])],
-                    )
-                )
-                target_sets = list(
-                    batch.get(
-                        "_probe_direct_set_targets",
-                        [[] for _ in batch.get("original_trees", [])],
-                    )
-                )
-                direct_set_debug_enabled = (
-                    os.environ.get("PHYLAFLOW_DEBUG_DIRECT_SET", "0") == "1"
-                )
-                autoregressive_first_hit_mode = (
-                    getattr(self.model, "first_hit_head_mode", "base")
-                    == "autoregressive_set"
-                )
-                for num, current_newick in enumerate(batch.get("original_trees", [])):
-                    if num >= len(sample_mask) or not bool(sample_mask[num]):
-                        continue
-                    if current_newick is None:
-                        continue
-                    if first_hit_logits is None and not autoregressive_first_hit_mode:
-                        continue
-                    if autoregressive_first_hit_mode and edge_features is None:
-                        continue
-                    try:
-                        tree_obj = Tree(current_newick)
-                        n_leaves = int(tree_obj.n_leaves)
-                    except Exception:
-                        continue
-                    split_masks_num = [int(m) for m in edge_split_masks[num]]
-                    split_masks_nonzero = [m for m in split_masks_num if m != 0]
-                    if not split_masks_nonzero:
-                        continue
-                    real_max_bit = max(m.bit_length() for m in split_masks_nonzero)
-                    full_mask = (1 << real_max_bit) - 1 if real_max_bit > 0 else 0
-                    try:
-                        encoder = BHVEncoder()
-                        bhv_masks, bhv_lengths = encoder.return_BHV_encoding(tree_obj)
-                        bhv_len_map = {
-                            int(m): float(l)
-                            for m, l in zip(bhv_masks, bhv_lengths)
-                            if l is not None
-                        }
-                    except Exception:
-                        continue
-                    target_set = {int(x) for x in target_sets[num]}
-                    logits = []
-                    targets = []
-                    velocity_preds = []
-                    matched_masks = []
-                    edge_feature_rows = []
-                    for edge_idx, mask in enumerate(split_masks_num):
-                        if mask == 0:
-                            continue
-                        k_bits = int(mask).bit_count()
-                        if min(k_bits, real_max_bit - k_bits) == 1:
-                            continue
-                        edge_length = bhv_len_map.get(int(mask))
-                        if edge_length is None and full_mask:
-                            edge_length = bhv_len_map.get(full_mask ^ int(mask))
-                        if edge_length is None or float(edge_length) <= 1e-8:
-                            continue
-                        if not autoregressive_first_hit_mode:
-                            logits.append(first_hit_logits[num, edge_idx, 0])
-                        velocity_preds.append(v_pred[num, edge_idx, 0])
-                        matched_masks.append(int(mask))
-                        targets.append(1.0 if int(mask) in target_set else 0.0)
-                        if edge_features is not None:
-                            edge_feature_rows.append(edge_features[num, edge_idx])
-                    if not velocity_preds:
-                        continue
-                    velocity_tensor = torch.stack(velocity_preds).reshape(-1)
-                    target_tensor = torch.tensor(
-                        targets,
-                        device=velocity_tensor.device,
-                        dtype=velocity_tensor.dtype,
-                    )
-                    target_mask = target_tensor > 0.5
-                    if autoregressive_first_hit_mode:
-                        if not edge_feature_rows:
-                            continue
-                        edge_feature_tensor = torch.stack(edge_feature_rows, dim=0).to(
-                            device=velocity_tensor.device,
-                            dtype=edge_features.dtype,
-                        )
-                        sample_loss, ar_stats = self.model.first_hit_autoregressive_group_loss(
-                            edge_feature_tensor,
-                            target_mask,
-                        )
-                        direct_set_pos_weights.append(1.0)
-                    else:
-                        logits_tensor = torch.stack(logits).reshape(-1)
-                        pos_weight = None
-                        if bool(
-                            getattr(
-                                self,
-                                "velocity_probe_direct_set_positive_reweight",
-                                False,
-                            )
-                        ):
-                            pos = target_tensor.sum()
-                            neg = target_tensor.numel() - pos
-                            if (
-                                float(pos.item()) > 0.0
-                                and float(neg.item()) > 0.0
-                            ):
-                                pos_weight_value = torch.clamp(
-                                    neg / pos, min=1.0
-                                )
-                                pos_weight_value = torch.pow(
-                                    pos_weight_value,
-                                    float(
-                                        getattr(
-                                            self,
-                                            "velocity_probe_direct_set_positive_reweight_power",
-                                            1.0,
-                                        )
-                                    ),
-                                )
-                                pos_weight_max = getattr(
-                                    self,
-                                    "velocity_probe_direct_set_positive_reweight_max",
-                                    None,
-                                )
-                                if pos_weight_max is not None and pos_weight_max > 0.0:
-                                    pos_weight_value = torch.clamp(
-                                        pos_weight_value,
-                                        min=1.0,
-                                        max=float(pos_weight_max),
-                                    )
-                                pos_weight = pos_weight_value.detach()
-                        sample_loss = F.binary_cross_entropy_with_logits(
-                            logits_tensor,
-                            target_tensor,
-                            pos_weight=pos_weight,
-                        )
-                        direct_set_pos_weights.append(
-                            float(pos_weight.detach().item())
-                            if pos_weight is not None
-                            else 1.0
-                        )
-                    target_negative_weight = float(
-                        getattr(
-                            self,
-                            "velocity_probe_direct_set_target_negative_weight",
-                            1.0,
-                        )
-                    )
-                    if bool(target_mask.any().item()) and target_negative_weight > 0.0:
-                        target_negative_loss = F.softplus(
-                            velocity_tensor[target_mask]
-                        ).mean()
-                        sample_loss = sample_loss + (
-                            target_negative_weight * target_negative_loss
-                        )
-                        target_negative_losses.append(target_negative_loss.detach())
-                        with torch.no_grad():
-                            target_negative_rates.append(
-                                float((velocity_tensor[target_mask] < 0.0).float().mean().item())
-                            )
-                    nontarget_mask = ~target_mask
-                    nontarget_nonnegative_weight = 0.0
-                    if (
-                        bool(nontarget_mask.any().item())
-                        and nontarget_nonnegative_weight > 0.0
-                    ):
-                        nontarget_nonnegative_loss = F.softplus(
-                            -velocity_tensor[nontarget_mask]
-                        ).mean()
-                        sample_loss = sample_loss + (
-                            nontarget_nonnegative_weight
-                            * nontarget_nonnegative_loss
-                        )
-                        nontarget_nonnegative_losses.append(
-                            nontarget_nonnegative_loss.detach()
-                        )
-                    direct_losses.append(sample_loss)
-                    with torch.no_grad():
-                        if autoregressive_first_hit_mode:
-                            pred_mask = self.model.predict_first_hit_autoregressive_mask(
-                                edge_feature_tensor
-                            )
-                            pred_set = {
-                                matched_masks[i]
-                                for i in range(len(matched_masks))
-                                if bool(pred_mask[i].item())
-                            }
-                        else:
-                            pred_mask = torch.sigmoid(logits_tensor) > 0.5
-                            pred_set = {
-                                matched_masks[i]
-                                for i in range(len(matched_masks))
-                                if bool(pred_mask[i].item())
-                            }
-                        exact_flags.append(float(pred_set == target_set))
-                        union = len(pred_set | target_set)
-                        inter = len(pred_set & target_set)
-                        jaccards.append(
-                            float(inter / union) if union > 0 else 1.0
-                        )
-
-                if direct_losses:
-                    loss = torch.stack(direct_losses).mean()
-                else:
-                    loss = torch.tensor(
-                        0.0,
-                        device=self.device,
-                        requires_grad=not eval,
-                    )
-                zero = torch.zeros((), device=loss.device, dtype=loss.dtype)
-                logs = {
-                    "loss": loss,
-                    "loss_regression": loss,
-                    "loss_auxiliary": zero,
-                    "velocity/probe_direct_set_exact_rate": torch.tensor(
-                        float(sum(exact_flags) / len(exact_flags))
-                        if exact_flags
-                        else 0.0,
-                        device=loss.device,
-                        dtype=torch.float32,
-                    ),
-                    "velocity/probe_direct_set_mean_jaccard": torch.tensor(
-                        float(sum(jaccards) / len(jaccards)) if jaccards else 0.0,
-                        device=loss.device,
-                        dtype=torch.float32,
-                    ),
-                    "velocity/probe_direct_set_target_negative_rate": torch.tensor(
-                        float(sum(target_negative_rates) / len(target_negative_rates))
-                        if target_negative_rates
-                        else 0.0,
-                        device=loss.device,
-                        dtype=torch.float32,
-                    ),
-                    "velocity/probe_direct_set_target_negative_loss": torch.tensor(
-                        float(
-                            torch.stack(target_negative_losses).mean().item()
-                        )
-                        if target_negative_losses
-                        else 0.0,
-                        device=loss.device,
-                        dtype=torch.float32,
-                    ),
-                    "velocity/probe_direct_set_nontarget_nonnegative_loss": torch.tensor(
-                        float(
-                            torch.stack(nontarget_nonnegative_losses).mean().item()
-                        )
-                        if nontarget_nonnegative_losses
-                        else 0.0,
-                        device=loss.device,
-                        dtype=torch.float32,
-                    ),
-                    "velocity/probe_direct_set_pos_weight": torch.tensor(
-                        float(sum(direct_set_pos_weights) / len(direct_set_pos_weights))
-                        if direct_set_pos_weights
-                        else 1.0,
-                        device=loss.device,
-                        dtype=torch.float32,
-                    ),
-                    "velocity/full_path_control_mode": torch.tensor(
-                        1.0
-                        if batch.get("_use_full_path_control_velocity_loss", False)
-                        else 0.0,
-                        device=loss.device,
-                        dtype=torch.float32,
-                    ),
-                }
-                if direct_set_debug_enabled:
-                    logging.info(
-                        "DIRECT_SET_DEBUG use_probe=%s pos_reweight=%s mean_pos_weight=%.6f samples=%d exact_rate=%.6f mean_jaccard=%.6f",
-                        bool(batch.get("_use_probe_parity_direct_set_loss", False)),
-                        bool(self.velocity_probe_direct_set_positive_reweight),
-                        float(logs["velocity/probe_direct_set_pos_weight"].detach().item()),
-                        int(len(direct_losses)),
-                        float(logs["velocity/probe_direct_set_exact_rate"].detach().item()),
-                        float(logs["velocity/probe_direct_set_mean_jaccard"].detach().item()),
-                    )
-                if direct_set_mse_weight <= 0.0:
-                    return logs
-                direct_set_loss = loss
 
             velocity_labels = batch["batched_velocity"]
             num_leaves = batch["num_leaves"]
@@ -1411,14 +745,6 @@ class TrainingLossMixin:
                         "velocity/dt_neg_jaccard": torch.tensor(
                             vel_metrics["dt_neg_jaccard"], device=v_pred.device
                         ),
-                        "velocity/length_jitter_attempted": torch.tensor(
-                            velocity_perturb_stats["attempted"],
-                            device=v_pred.device,
-                        ),
-                        "velocity/length_jitter_applied": torch.tensor(
-                            velocity_perturb_stats["applied"],
-                            device=v_pred.device,
-                        ),
                     }
                 )
 
@@ -1440,7 +766,6 @@ class TrainingLossMixin:
                 # w = w * (1.0 + boost * first.float())
 
                 # loss = (w * (pc - yc)**2).mean()
-                # import pdb; pdb.set_trace()
 
                 # tau_true = lengths[contract] / (-y[contract]).clamp_min(eps)
                 # tau_min = tau_true.min()
@@ -1459,15 +784,7 @@ class TrainingLossMixin:
                 scale = abs_y.median().clamp_min(eps)  # robust scale
                 w = (abs_y / scale).clamp(min=0.0, max=20.0)
                 weighted_mse = (w * residual_sq).sum() / w.sum().clamp_min(eps)
-                if self.velocity_loss_mode == "plain":
-                    loss = plain_mse
-                elif self.velocity_loss_mode == "weighted":
-                    loss = weighted_mse
-                else:
-                    loss = (
-                        self.velocity_loss_plain_weight * plain_mse
-                        + (1.0 - self.velocity_loss_plain_weight) * weighted_mse
-                    )
+                loss = plain_mse
                 regression_loss = loss
                 auxiliary_loss = p.new_tensor(0.0)
 
@@ -1647,7 +964,7 @@ class TrainingLossMixin:
                     logtau_predset_over_loss = control_parts["logtau_predset_over"]
                     first_hit_head_loss_raw = control_parts["firsthit_bce_raw"]
                     first_hit_head_loss = control_parts["firsthit_bce"]
-                    logs["velocity/full_path_control_mode"] = torch.tensor(
+                    logs["velocity/full_path_batch"] = torch.tensor(
                         1.0, dtype=torch.float32, device=v_pred.device
                     )
                 contract_mask = (y < -self.velocity_sign_eps) & (lengths > 1e-8)
@@ -1962,14 +1279,6 @@ class TrainingLossMixin:
             mse_branch_loss = loss
             mse_branch_regression_loss = regression_loss
             mse_branch_auxiliary_loss = auxiliary_loss
-            if direct_set_loss is not None:
-                loss = (
-                    direct_set_loss_weight * direct_set_loss
-                    + direct_set_mse_weight * mse_branch_loss
-                )
-                regression_loss = direct_set_mse_weight * mse_branch_regression_loss
-                auxiliary_loss = loss - regression_loss
-            # print("Wow congrats")
             logs.update(
                 {
                     "velocity/loss_plain_mse": plain_mse.detach(),
@@ -1979,17 +1288,6 @@ class TrainingLossMixin:
                     "velocity/mse_branch_auxiliary_unscaled": mse_branch_auxiliary_loss.detach(),
                     "velocity/loss_regression_unscaled": regression_loss.detach(),
                     "velocity/loss_auxiliary_unscaled": auxiliary_loss.detach(),
-                    "velocity/probe_direct_set_loss": (
-                        torch.zeros((), device=v_pred.device, dtype=v_pred.dtype)
-                        if direct_set_loss is None
-                        else direct_set_loss.detach()
-                    ),
-                    "velocity/probe_direct_set_loss_weight": torch.tensor(
-                        direct_set_loss_weight, device=v_pred.device
-                    ),
-                    "velocity/probe_direct_set_mse_weight": torch.tensor(
-                        direct_set_mse_weight, device=v_pred.device
-                    ),
                     "velocity/first_hit_velocity_loss": first_hit_velocity_loss.detach(),
                     "velocity/logtau_all_loss_raw": logtau_all_loss_raw.detach(),
                     "velocity/logtau_all_loss": logtau_all_loss.detach(),
@@ -2012,14 +1310,14 @@ class TrainingLossMixin:
             logs["loss"] = loss
             # if len(preds_list) > 0:
             #     logger.info(
-            #         f"Velocity loss ({self.velocity_loss_mode}): total={loss.item():.6f} "
+                #         f"Velocity loss: total={loss.item():.6f} "
             #         f"plain={plain_mse.item():.6f} weighted={weighted_mse.item():.6f} "
             #         # f"dt_gate={dt_gate.item():.4f} dt_candidates={dt_candidates_loss.item():.6f} "
             #         # f"dt_hit={dt_hit_loss.item():.6f}"
             #     )
             # else:
 
-            if self.record and not is_replay_batch:
+            if self.record and not is_full_path_batch:
                 dt_hit_pred_log = (
                     vel_metrics["dt_hit_pred"]
                     if np.isfinite(vel_metrics["dt_hit_pred"])
@@ -2094,15 +1392,10 @@ class TrainingLossMixin:
                         "velocity/first_hit_fp_mass_raw": float(first_hit_fp_mass.detach().item()),
                         "velocity/first_hit_fn_mass_raw": float(first_hit_fn_mass.detach().item()),
                         "velocity/first_hit_extra_penalty_raw": float(first_hit_extra_penalty_raw.detach().item()),
-                        "velocity/length_jitter_attempted": velocity_perturb_stats["attempted"],
-                        "velocity/length_jitter_applied": velocity_perturb_stats["applied"],
                     })
                 self._wandb_log_filtered(vel_wandb, step=self.stepper)
-            # import pdb
-
-            # pdb.set_trace()
         else:
-            batch, ar_prep_stats = self._prepare_autoregressive_training_batch(batch)
+            batch = self._prepare_autoregressive_training_batch(batch)
             skip_autoregressive_merge_metrics = bool(
                 batch.get("_skip_autoregressive_merge_metrics", False)
             )
@@ -2161,7 +1454,7 @@ class TrainingLossMixin:
             losses = []
 
             total_metrics = []
-            alternative_target_counts = []
+            candidate_target_counts = []
             stop_after_merge_losses = []
             stop_after_merge_accuracies = []
             stop_after_merge_targets = []
@@ -2196,21 +1489,7 @@ class TrainingLossMixin:
                 explicit_subsets = list(dict.fromkeys(explicit_subsets))
 
                 candidate_subsets = list(dict.fromkeys(explicit_subsets))
-                if (
-                    self.autoregressive_target_mode == "ready_alternatives"
-                    and "target_trees" in batch
-                ):
-                    ready_subsets = _ready_target_merge_subsets_for_group(
-                        splits_in_polytomy,
-                        batch["target_trees"][batch_index],
-                        Tree(batch["newick_autoregressive_trees"][batch_index]).n_leaves,
-                    )
-                    for subset in ready_subsets:
-                        subset = tuple(sorted(int(split) for split in subset))
-                        if subset not in candidate_subsets:
-                            candidate_subsets.append(subset)
-
-                alternative_target_counts.append(float(len(candidate_subsets)))
+                candidate_target_counts.append(float(len(candidate_subsets)))
 
                 if not candidate_subsets:
                     chosen_polytomies.append(torch.tensor(0.0))
@@ -2356,30 +1635,19 @@ class TrainingLossMixin:
                 1 for was_found in found.values() if not was_found
             )
             if missing_explicit_targets > 0:
-                if self.autoregressive_target_mode == "ready_alternatives":
-                    if self.verbose:
-                        logger.info(
-                            "Autoregressive explicit-target misses under ready-alternatives: %s",
-                            missing_explicit_targets,
+                for (batch_index, split_mask), was_found in found.items():
+                    if not was_found:
+                        print(
+                            "Missing split: ",
+                            [
+                                j
+                                for j in range(int(split_mask).bit_length())
+                                if (int(split_mask) >> j) & 1
+                            ],
                         )
-                    logs["autoregressive_stats/missing_explicit_targets"] = torch.tensor(
-                        float(missing_explicit_targets),
-                        device=loss_device,
-                    )
-                else:
-                    for (batch_index, split_mask), was_found in found.items():
-                        if not was_found:
-                            print(
-                                "Missing split: ",
-                                [
-                                    j
-                                    for j in range(int(split_mask).bit_length())
-                                    if (int(split_mask) >> j) & 1
-                                ],
-                            )
-                            raise Exception(
-                                f"Did not find merge for split {split_mask} in batch element {batch_index}!"
-                            )
+                        raise Exception(
+                            f"Did not find merge for split {split_mask} in batch element {batch_index}!"
+                        )
 
             L_polytomy_choosing = None
 
@@ -2391,8 +1659,6 @@ class TrainingLossMixin:
                     chosen_polytomies_tensor,
                 ) 
 
-                if self.training_step_verbose_logging_enabled:
-                    logger.info(f"Polytomy choosing loss: {L_polytomy_choosing.item()}")
                 if self.record:
                     self._wandb_log_filtered(
                         {
@@ -2410,10 +1676,6 @@ class TrainingLossMixin:
             else:
                 anchor_param = next(self.model.parameters())
                 L_merging = anchor_param.sum() * 0.0
-                if self.training_step_verbose_logging_enabled:
-                    logger.info(
-                        "Autoregressive loss skipped because no candidate merge targets were available."
-                    )
                 logs["autoregressive_stats/no_candidate_merge_loss"] = torch.tensor(
                     1.0,
                     device=loss_device,
@@ -2423,19 +1685,12 @@ class TrainingLossMixin:
                 L_polytomy_choosing,
                 self.autoregressive_polytomy_choosing_weight,
             )
-            if self.training_step_verbose_logging_enabled:
-                logger.info(f"Autoregressive loss: {L_merging.item()}")
-
             aggregated_metrics = {}
             if len(total_metrics) > 0:
                 for key in total_metrics[0]:
                     aggregated_metrics[key] = sum(
                         m[key] for m in total_metrics
                     ) / len(total_metrics)
-
-                if self.training_step_verbose_logging_enabled:
-                    for key in aggregated_metrics:
-                        logger.info(f"{key}: {aggregated_metrics[key]}")
 
             if L_polytomy_choosing is not None:
                 logs["autoregressive_stats/polytomy_choosing_weight"] = torch.tensor(
@@ -2479,68 +1734,23 @@ class TrainingLossMixin:
             # Calculate average polytomy size
             avg_polytomy_size = np.mean(polytomy_sizes) if polytomy_sizes else 0.0
             num_polytomies = len(polytomy_sizes)
-            avg_alternative_targets = (
-                float(np.mean(alternative_target_counts))
-                if alternative_target_counts
+            avg_candidate_targets = (
+                float(np.mean(candidate_target_counts))
+                if candidate_target_counts
                 else 0.0
             )
-            if self.training_step_verbose_logging_enabled:
-                logger.info(f"Average polytomy size: {avg_polytomy_size}")
-                logger.info(
-                    f"Average alternative autoregressive targets: {avg_alternative_targets}"
-                )
             logs["autoregressive_stats/avg_candidate_targets"] = torch.tensor(
-                avg_alternative_targets,
-                device=loss_device,
-            )
-            logs["autoregressive_stats/rollin_attempted"] = torch.tensor(
-                ar_prep_stats["rollin_attempted"],
-                device=loss_device,
-            )
-            logs["autoregressive_stats/rollin_applied"] = torch.tensor(
-                ar_prep_stats["rollin_applied"],
-                device=loss_device,
-            )
-            logs["autoregressive_stats/dagger_attempted"] = torch.tensor(
-                ar_prep_stats["dagger_attempted"],
-                device=loss_device,
-            )
-            logs["autoregressive_stats/dagger_applied"] = torch.tensor(
-                ar_prep_stats["dagger_applied"],
-                device=loss_device,
-            )
-            dagger_avg_steps = (
-                ar_prep_stats["dagger_rollout_steps"] / ar_prep_stats["dagger_applied"]
-                if ar_prep_stats["dagger_applied"] > 0.0
-                else 0.0
-            )
-            logs["autoregressive_stats/dagger_avg_rollout_steps"] = torch.tensor(
-                dagger_avg_steps,
-                device=loss_device,
-            )
-            logs["autoregressive_stats/structure_perturb_attempted"] = torch.tensor(
-                ar_prep_stats["structure_perturb_attempted"],
-                device=loss_device,
-            )
-            logs["autoregressive_stats/structure_perturb_applied"] = torch.tensor(
-                ar_prep_stats["structure_perturb_applied"],
+                avg_candidate_targets,
                 device=loss_device,
             )
 
-            if self.record and not is_replay_batch:
+            if self.record and not is_full_path_batch:
                 # Batch all metrics into a single wandb.log call to avoid step conflicts
                 wandb_metrics = {
                     "train/autoregressive_loss": L_merging.item(),
                     "autoregressive_stats/avg_polytomy_size": avg_polytomy_size,
                     "autoregressive_stats/num_polytomies": num_polytomies,
-                    "autoregressive_stats/avg_candidate_targets": avg_alternative_targets,
-                    "autoregressive_stats/rollin_attempted": ar_prep_stats["rollin_attempted"],
-                    "autoregressive_stats/rollin_applied": ar_prep_stats["rollin_applied"],
-                    "autoregressive_stats/dagger_attempted": ar_prep_stats["dagger_attempted"],
-                    "autoregressive_stats/dagger_applied": ar_prep_stats["dagger_applied"],
-                    "autoregressive_stats/dagger_avg_rollout_steps": dagger_avg_steps,
-                    "autoregressive_stats/structure_perturb_attempted": ar_prep_stats["structure_perturb_attempted"],
-                    "autoregressive_stats/structure_perturb_applied": ar_prep_stats["structure_perturb_applied"],
+                    "autoregressive_stats/avg_candidate_targets": avg_candidate_targets,
                 }
                 wandb_metrics.update(
                     {f"{key}": aggregated_metrics[key] for key in aggregated_metrics}
