@@ -37,9 +37,9 @@ def _load_config_file(config_file):
 class ThresholdStepCheckpoint(Callback):
     """Save once a completed train batch has crossed the next due step.
 
-    Lightning's every_n_train_steps callback can miss all future checkpoints if
-    manual optimization/OOM retry logic shifts batch-end global_step off the
-    exact modulo. This callback keeps the same cadence but uses >= thresholding.
+    Lightning's every_n_train_steps callback can miss future checkpoints when
+    manual optimization leaves batch-end global_step off the exact modulo. This
+    callback keeps the same cadence but uses >= thresholding.
     """
 
     def __init__(self, dirpath, every_n_train_steps):

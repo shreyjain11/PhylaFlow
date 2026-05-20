@@ -146,22 +146,11 @@ def _normalize_bank_group_key(
 
 
 class TreeDataset(Dataset):
-    """Dataset mapping IDs to Nexus sequences and MrBayes tree files.
+    """Dataset for release Nexus/MrBayes data and DS posterior references.
 
-    Layout assumptions (configurable):
-    - nexus_root contains files: <id>.nex or <id>.nexus
-    - mrbayes_root contains subdirs per <id> with one or more .t files
-      (e.g., <id>_DNA.run1.t, <id>_DNA.run2.t)
-
-    No parsing is performed here by default; this class only builds an index
-    and returns paths with placeholders. Fill in parse methods as needed.
-
-    Args:
-        nexus_root: Directory with Nexus source files.
-        mrbayes_root: Directory with MrBayes output folders.
-        prefer_run: Which run's .t to prefer ("run1", "run2", "any").
-        transform: Optional callable applied to each sample dict.
-        cache: If True, eagerly parse and cache sequences/trees (TODO).
+    The final release path uses `.trprobs` posterior references plus fixed
+    start/target path artifacts. The Nexus/MrBayes directory layout remains
+    supported for lightweight fixtures and validation utilities.
     """
 
     def __init__(
@@ -318,8 +307,7 @@ class TreeDataset(Dataset):
         self._overfit_fixed_pair_target_tree_groups: Dict[str, List[Dict[str, Any]]] = {}
         self.overfit_split_multi_subset_events = False
         self.size_detector = SizeDetector()
-        # State tracker for adaptive batching (index, subtree_size, num_subtrees)
-        # Default initialization
+        # Tracks the most recently sampled dataset id and leaf count.
         self.chosen_tree = (0, 100, 1)
         self.name_to_seq = {}
 
@@ -890,8 +878,6 @@ class TreeDataset(Dataset):
 
         t = EteTree(real_tree_newick, format=1)
         leaves = t.get_leaves()
-
-        # Pruning logic for adaptive batching
 
         if preset_subtree_size is not None and len(leaves) > preset_subtree_size:
             kept_leaves = random.sample(leaves, preset_subtree_size)
@@ -1741,9 +1727,8 @@ class PhylaDataModule(pl.LightningDataModule):
     """PyTorch Lightning DataModule for managing TreeDataset splits.
 
     Responsibilities:
-    - prepare_data(): download / generate raw data (non-distributed)
-    - setup(stage): create Train/Val/Test datasets (distributed safe)
-    - train_dataloader()/val_dataloader()/test_dataloader()/predict_dataloader()
+    - create the DS train/validation datasets used by the release configs
+    - expose train_dataloader()/val_dataloader()
     """
 
     def __init__(
@@ -1944,23 +1929,17 @@ class PhylaDataModule(pl.LightningDataModule):
         )
 
     def test_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.dataset_test,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=self.collate_fn,
+        raise NotImplementedError(
+            "Standalone test dataloaders are not part of the initial PhylaFlow "
+            "release. Use val_dataloader() for the configured posterior "
+            "reference split."
         )
 
     def predict_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.dataset_predict,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=self.collate_fn,
+        raise NotImplementedError(
+            "Standalone prediction dataloaders are not part of the initial "
+            "PhylaFlow release. Sampling is exposed through the training module "
+            "and release configs."
         )
 
     def collate_fn(self, batch, preset_subtree_num=None):

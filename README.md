@@ -74,6 +74,28 @@ python -m run.run configs/final_release.yaml
 The config uses environment-variable expansion, so artifact and data roots are
 resolved at load time.
 
+## Initial arXiv Release Scope
+
+This repository is intended to accompany the first arXiv preprint. The release
+path is the cleaned DS1-DS8 training and sampling code in
+`configs/final_release.yaml`, plus the DS2 smoke check above. The code has been
+trimmed to the components used by that path: fixed DS start/target banks,
+full-path velocity and autoregressive supervision, Phyla conditioning, the
+first-hit head, structured-subset topology resolution, optional branch-length
+relaxation utilities, and the metric code used for release checks.
+
+This initial release is not a full paper-table reproduction harness. The main
+follow-up items are:
+
+- Guided-refinement kernels: the split-guided PhylaFlow-MCMC NNI/MH sampler
+  reported in the paper, plus the matched PhyloGFN-MCMC comparison.
+- Paper-table orchestration: external baseline wrappers, long MrBayes
+  refinement runs, IQ-TREE likelihood diagnostics, DS1 ablations, and the
+  joint sequence-conditioning / cross-conditioning experiment drivers.
+- Convenience interfaces: a checkpoint-only sampling/evaluation CLI,
+  one-command table reproduction, broader custom-dataset recipes, and Lightning
+  `test_dataloader()` / `predict_dataloader()` entry points.
+
 ## Expected Artifacts
 
 `PHYLAFLOW_DATA_ROOT` is expected to contain:
@@ -82,10 +104,9 @@ resolved at load time.
   loader and metric code.
 - `golden_run_data_DS1-8/`: longer posterior references used by the reported
   comparison metrics.
-- `fixed_path_artifacts/`: fixed start/target banks and anchor samples used by
-  final-model training and sampling checks.
+- `fixed_path_artifacts/`: fixed start/target banks used by final-model
+  training and sampling checks.
 - `mrbayes20k_pickles/`: dataset pickles used by MrBayes 20k evaluation.
-- `anchors/`: fixed anchor metadata used by the release artifact bundle.
 
 `PHYLAFLOW_ARTIFACT_ROOT` is expected to contain:
 
@@ -110,7 +131,7 @@ For a paper-method crosswalk, see `docs/method_to_code_map.md`.
   start-tree adapters.
 - `data/dataset.py`: random start-tree generation, posterior/reference loading,
   fixed-pair sampling, and full-path oracle samples.
-- `run/TrainingModule.py`: training losses, first-hit direct-set supervision,
+- `run/TrainingModule.py`: training losses, first-hit set supervision,
   deterministic event-based sampler, sample metrics, unseen-start evaluation,
   and branch-relaxer application.
 - `utils/bhv_utils.py`: BHV geodesic boundary paths, sampled orthant velocities,
@@ -122,7 +143,6 @@ For a paper-method crosswalk, see `docs/method_to_code_map.md`.
   length initialization.
 - `scripts/pretrain_start_tree_metric_encoder.py`: frozen start-tree metric
   encoder pretraining and table export.
-- `scripts/build_anchor_bank.py`: release version of the anchor-state builder.
 - `scripts/train_branch_relaxer.py`: standalone branch-length relaxer training.
 - `scripts/jc_likelihood.py`: small JC pruning likelihood used by relaxer
   evaluation utilities.

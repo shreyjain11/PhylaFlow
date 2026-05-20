@@ -14,7 +14,7 @@ The config keeps only the final active components:
   Phyla additions are disabled in the final model.
 - Frozen start-tree metric table used by the first-hit and autoregressive heads.
 - Structured-subset autoregressive topology head.
-- Direct-set first-hit supervision.
+- Full-path velocity, first-hit, and autoregressive supervision.
 - Deterministic discrete-phase exact-boundary sampling.
 
 Before running, set:
