@@ -1,7 +1,9 @@
 import unittest
 import pickle
 import numpy as np
+from unittest.mock import patch
 from ete3 import Tree as EteTree
+from data.dataset import TreeDataset
 from utils.bhv_distance import bhv_geodesic_with_support
 from utils.random_tree import Tree
 from utils.bhv_utils import (
@@ -252,11 +254,18 @@ class TestEncodingConsistency(unittest.TestCase):
                     f"Boundary sample {sample_idx}, merge {merge_idx} merge_indices do not reconstruct the resulting split.",
                 )
 
-    def test_boundary_merge_paths_cross_boundary(self):
+    @patch.object(TreeDataset, "build_index", return_value=None)
+    def test_boundary_merge_paths_cross_boundary(self, _mock):
         random.seed(42)
 
-        target_tree = self.newick_starting_trees[0]
-        start_tree = str(Tree(num_leaves=Tree(target_tree).n_leaves, random=True))
+        ds = TreeDataset(
+            nexus_root="mock",
+            mrbayes_root="mock",
+            random_sanity_check=True,
+            overfit_velocity_zero=True,
+        )
+        target_tree = ds.load_posterior_trees_from_tfiles([])[0]
+        start_tree = ds.sample_random_tree(target_tree)
 
         start = Tree(start_tree)
         target = Tree(target_tree)

@@ -116,7 +116,12 @@ def build_tree_from_splits(split_set, length_map, n_leaves, root_leaf=1, mapping
             m_leaf = 1 << i
             length = float(length_map.get(m_leaf, 0.1))
             G.add_edge(root_node, i, length=length)
-        return G, tree_to_newick(G, root=root_leaf)
+        return G, tree_to_newick(
+            G,
+            root=root_leaf,
+            dummy_node=dummy_node,
+            mapping=mapping,
+        )
 
     # ------------------------------------------------------------------
     # STEP 0: separate internal splits from pendant (leaf) splits
@@ -149,7 +154,12 @@ def build_tree_from_splits(split_set, length_map, n_leaves, root_leaf=1, mapping
         G.add_node(root_node, is_leaf=False, label="R")
         for i in range(n_leaves):
             G.add_edge(root_node, i, length=leaf_lengths.get(i, 0.0))
-        return G, tree_to_newick(G, root=root_leaf)
+        return G, tree_to_newick(
+            G,
+            root=root_leaf,
+            dummy_node=dummy_node,
+            mapping=mapping,
+        )
 
     # ------------------------------------------------------------------
     # STEP 1: convert internal splits -> oriented clusters (away from root)

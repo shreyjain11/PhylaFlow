@@ -1,0 +1,8 @@
+# Tell GitHub Linguist to treat everything as Python
+*.py linguist-language=Python
+
+# Ignore data files
+*.fasta linguist-vendored
+*.fa linguist-vendored
+*.newick linguist-vendored
+*.nwk linguist-vendored
