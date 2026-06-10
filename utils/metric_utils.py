@@ -22,15 +22,81 @@ enc = BHVEncoder()
 logger = logging.getLogger(__name__)
 
 
+def _leaf_name_set(newick: str) -> set[str]:
+    tree = EteTree(newick, format=1)
+    return {str(leaf.name) for leaf in tree.iter_leaves()}
+
+
 def calculate_norm_rf(t1_nw: str, t2_nw: str) -> float:
 	try:
 		t1 = EteTree(t1_nw, format=1)
 		t2 = EteTree(t2_nw, format=1)
+		t1_leaves = {str(leaf.name) for leaf in t1.iter_leaves()}
+		t2_leaves = {str(leaf.name) for leaf in t2.iter_leaves()}
+		if t1_leaves != t2_leaves:
+			logger.debug(
+				"calculate_norm_rf leaf-set mismatch: %d vs %d leaves (%d shared)",
+				len(t1_leaves),
+				len(t2_leaves),
+				len(t1_leaves.intersection(t2_leaves)),
+			)
+			return float("nan")
 		rf, max_rf, _, _, _, _, _ = t1.robinson_foulds(t2, unrooted_trees=True)
 		return rf / max_rf if max_rf > 0 else 0.0
 	except Exception as e:
 		logger.warning("calculate_norm_rf failed: %s", e)
 		return float("nan")
+
+
+def align_numeric_leaf_labels_to_reference(
+    sampled_tree: str,
+    reference_tree: str,
+    target_tree: str | None = None,
+) -> Tuple[str, bool]:
+    """Map sampled 0..n-1 leaf IDs back to reference taxon names when needed."""
+    sampled_tree = str(sampled_tree)
+    try:
+        sampled_names = _leaf_name_set(sampled_tree)
+        target_names = _leaf_name_set(str(target_tree)) if target_tree else None
+    except Exception:
+        return sampled_tree, False
+
+    if target_names is not None and sampled_names == target_names:
+        return sampled_tree, False
+
+    try:
+        reference = Tree(str(reference_tree))
+    except Exception:
+        return sampled_tree, False
+
+    index_to_name = {}
+    for raw_idx, raw_name in reference.id_to_name.items():
+        name = str(raw_name)
+        if name == "ROOT_DUMMY":
+            continue
+        try:
+            key = str(int(raw_idx))
+        except (TypeError, ValueError):
+            key = str(raw_idx)
+        index_to_name[key] = name
+
+    if not sampled_names or any(name not in index_to_name for name in sampled_names):
+        return sampled_tree, False
+
+    reference_names = set(index_to_name.values())
+    if target_names is not None and reference_names != target_names:
+        return sampled_tree, False
+
+    try:
+        tree = EteTree(sampled_tree, format=1)
+        for leaf in tree.iter_leaves():
+            leaf.name = index_to_name[str(leaf.name)]
+        remapped = tree.write(format=1)
+        if target_names is not None and _leaf_name_set(remapped) != target_names:
+            return sampled_tree, False
+        return remapped, True
+    except Exception:
+        return sampled_tree, False
 
 
 def _topology_leaf_sort_key(name: str) -> Tuple[int, str]:

@@ -1,0 +1,1 @@
+python generate_input_directory.py --root_dir /n/holylfs06/LABS/mzitnik_lab/Users/yektefaie/mr_bayes_runs/ --output_dir /n/netscratch/mzitnik_lab/Lab/yektefaie/phylaflow_datasets/

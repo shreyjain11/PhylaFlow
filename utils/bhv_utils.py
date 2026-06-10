@@ -245,22 +245,18 @@ def get_structural_polytomy_groups_from_newick(newick_tree, min_children=3):
 def _direct_children(parent, internal_clusters, n_leaves):
     parent = int(parent)
     leaf_masks = [1 << leaf for leaf in range(n_leaves - 1) if parent & (1 << leaf)]
-    candidates = {
-        int(cluster)
-        for cluster in internal_clusters
-        if _is_strict_subset(cluster, parent)
-    }
-    candidates.update(int(mask) for mask in leaf_masks)
+    candidates = [cluster for cluster in internal_clusters if _is_strict_subset(cluster, parent)]
+    candidates.extend(leaf_masks)
 
     children = []
-    for candidate in sorted(
-        candidates,
-        key=lambda mask: (int(mask).bit_count(), int(mask)),
-        reverse=True,
-    ):
-        if any(_is_strict_subset(candidate, child) for child in children):
-            continue
-        children.append(int(candidate))
+    for candidate in candidates:
+        dominated = False
+        for other in candidates:
+            if _is_strict_subset(candidate, other) and _is_strict_subset(other, parent):
+                dominated = True
+                break
+        if not dominated:
+            children.append(int(candidate))
 
     children = _sort_masks(children)
     union = 0
